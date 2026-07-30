@@ -199,9 +199,9 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   assert.equal(reuseKey.pidsLimit, '128');
   assert.equal(
     reuseKey.scratchTmpfs,
-    '/geulbat/scratch:rw,noexec,nosuid,nodev,size=64m',
+    '/geulbat/scratch:rw,noexec,nosuid,nodev,mode=1777,size=64m',
   );
-  assert.equal(reuseKey.tmpTmpfs, '/tmp:rw,nosuid,nodev,size=64m');
+  assert.equal(reuseKey.tmpTmpfs, '/tmp:rw,nosuid,nodev,mode=1777,size=64m');
   assert.match(reuseKey.packageCacheIdentityHash, /^[a-f0-9]{64}$/u);
 
   const changedNetworkPolicy = normalizePtcSessionDockerReuseKey({
@@ -345,9 +345,9 @@ void test('normalizePtcSessionDockerReuseKey separates resource budget drift fro
   assert.equal(baseKey.pidsLimit, '256');
   assert.equal(
     baseKey.scratchTmpfs,
-    '/geulbat/scratch:rw,noexec,nosuid,nodev,size=512m',
+    '/geulbat/scratch:rw,noexec,nosuid,nodev,mode=1777,size=512m',
   );
-  assert.equal(baseKey.tmpTmpfs, '/tmp:rw,nosuid,nodev,size=512m');
+  assert.equal(baseKey.tmpTmpfs, '/tmp:rw,nosuid,nodev,mode=1777,size=512m');
   assert.notEqual(changedResourceKey.identityHash, baseKey.identityHash);
   assert.equal(
     changedResourceKey.packageCacheIdentityHash,

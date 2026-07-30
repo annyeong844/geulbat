@@ -405,6 +405,48 @@ void test('streamGrokOAuthResponses surfaces xAI WebSocket error envelopes for r
   assert.equal(observed.releaseKeep, false);
 });
 
+void test('streamGrokOAuthResponses forwards Retry-After-less admission fallback decisions', async () => {
+  const model = resolveGrokOAuthModelDescriptor('grok');
+  const observed = createObservedWebSocketRun();
+  const fallbackErrors: unknown[] = [];
+
+  const resultPromise = streamGrokOAuthResponses(
+    {
+      model,
+      accessToken: 'access-token',
+      providerSessionId: 'provider-session',
+      history: [],
+      reasoningEffort: 'low',
+      providerWebSocketSessions: observed.providerWebSocketSessions,
+    },
+    {
+      resolveProviderAdmissionFallbackDelayMs(error) {
+        fallbackErrors.push(error);
+        return 2_100;
+      },
+    },
+  );
+
+  await setImmediatePromise();
+  observed.emit({
+    type: 'response.failed',
+    response: {
+      error: {
+        message: 'rate limit reached',
+      },
+    },
+  });
+
+  await assert.rejects(resultPromise, /rate limit reached/u);
+  assert.equal(fallbackErrors.length, 1);
+  assert.deepEqual(observed.deferrals, [
+    {
+      url: 'wss://api.x.ai/v1/responses',
+      retryAfterMs: 2_100,
+    },
+  ]);
+});
+
 interface ObservedWebSocketRun {
   providerWebSocketSessions: {
     acquireWebSocket: (
@@ -422,8 +464,10 @@ interface ObservedWebSocketRun {
       };
       release: (options?: { keep?: boolean }) => void;
     }>;
+    deferProviderRequests: (url: string, retryAfterMs: number) => void;
   };
   sentPayloads: string[];
+  deferrals: Array<{ url: string; retryAfterMs: number }>;
   emit(event: Record<string, unknown>): void;
   url?: string;
   headers?: Headers;
@@ -444,10 +488,14 @@ function createObservedWebSocketRun(): ObservedWebSocketRun {
 
   const observed: ObservedWebSocketRun = {
     sentPayloads,
+    deferrals: [],
     emit(event: Record<string, unknown>) {
       socket.emit('message', Buffer.from(JSON.stringify(event)));
     },
     providerWebSocketSessions: {
+      deferProviderRequests(url, retryAfterMs) {
+        observed.deferrals.push({ url, retryAfterMs });
+      },
       async acquireWebSocket(
         url: string,
         headers: Headers,

@@ -266,12 +266,12 @@ function lifecycleEvent(
 }
 
 function sendEvent(event: DaemonLifecycleEvent): Promise<void> {
-  const send = process.send;
+  const send = process.send?.bind(process);
   if (send === undefined || !process.connected) {
     return Promise.resolve();
   }
   return new Promise<void>((resolve, reject) => {
-    send.call(process, event, (error) => {
+    send(event, (error) => {
       if (error === null) {
         resolve();
         return;

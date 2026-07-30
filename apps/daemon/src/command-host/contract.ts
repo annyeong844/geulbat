@@ -142,7 +142,7 @@ export interface HostCommandRuntime {
      * argv·env·journal·metadata에 기록하지 않고, 새 자식을 만들 때 한 번만
      * 쓴다. 멱등 start가 기존 세션에 합류하면 다시 쓰지 않는다.
      */
-    initialStdin?: string;
+    initialStdin?: string | Uint8Array;
     timeoutMs?: number;
     /** outputRedaction이 적용된 뒤의 스트림 바이트 기준 상한. */
     maxOutputBytesPerStream?: number;
@@ -165,6 +165,12 @@ export interface HostCommandRuntime {
      */
     stateRoot: string;
     yieldTimeMs?: number;
+    /**
+     * 터미널 출력이 inline 한도보다 작아도 text projection으로 해제하지 않고
+     * outputRef를 유지한다. raw page 소비자가 원본 바이트를 잃지 않기 위한
+     * opt-in이며, 지원하지 않는 worker에는 요청을 보내지 않는다.
+     */
+    requiresOutputRef?: true;
     signal?: AbortSignal;
   }): Promise<HostCommandInitialResult>;
   interact(args: {
@@ -192,6 +198,8 @@ export interface HostCommandRuntime {
       stream: HostCommandOutputStream;
       offsetBytes: number;
       limitBytes: number;
+      /** Omitted preserves the existing UTF-8 page projection. */
+      encoding?: 'base64';
       /**
        * 읽은 페이지를 이번 응답에서는 놓지 않는다. lossless 스트림에서만
        * 유효하며, 소비자는 다음 요청의 releaseUpToBytes로 확인한다.

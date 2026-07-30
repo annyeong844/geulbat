@@ -109,7 +109,7 @@ export interface ThreadSubagentTerminalOutcome {
 }
 
 export interface ThreadRunPreferences {
-  workingDirectory: string;
+  workingDirectory?: string;
   permissionMode?: PermissionMode;
   reasoningEffort?: RunReasoningEffort;
   serviceTier?: RunServiceTier;
@@ -746,7 +746,8 @@ function isNonCompactionThreadMessage(
 function isThreadRunPreferences(value: unknown): value is ThreadRunPreferences {
   return (
     isRecord(value) &&
-    typeof value.workingDirectory === 'string' &&
+    (value.workingDirectory === undefined ||
+      typeof value.workingDirectory === 'string') &&
     (value.permissionMode === undefined ||
       isPermissionMode(value.permissionMode)) &&
     (value.reasoningEffort === undefined ||

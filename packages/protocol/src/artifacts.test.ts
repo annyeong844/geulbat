@@ -201,6 +201,17 @@ void test('isArtifactSourceRef accepts only discriminated thread source refs', (
   assert.equal(
     isArtifactSourceRef({
       kind: 'thread',
+      threadId: '00000000-0000-4000-8000-000000000001',
+      runId: 'run-chat',
+      filePath: null,
+      messageTimestamp: '2026-04-10T00:00:00.000Z',
+    }),
+    true,
+  );
+
+  assert.equal(
+    isArtifactSourceRef({
+      kind: 'thread',
       workingDirectory: 'workspace',
       threadId: '00000000-0000-4000-8000-000000000001',
       runId: 'run-1',
@@ -298,6 +309,23 @@ void test('isArtifactSourceRef accepts only discriminated thread source refs', (
 });
 
 void test('normalizeArtifactSourceRef upgrades legacy nullable records to discriminated refs', () => {
+  assert.deepEqual(
+    normalizeArtifactSourceRef({
+      kind: 'thread',
+      threadId: '00000000-0000-4000-8000-000000000001',
+      runId: 'run-chat',
+      filePath: null,
+      messageTimestamp: '2026-04-10T00:00:00.000Z',
+    }),
+    {
+      kind: 'thread',
+      threadId: '00000000-0000-4000-8000-000000000001',
+      runId: 'run-chat',
+      filePath: null,
+      messageTimestamp: '2026-04-10T00:00:00.000Z',
+    },
+  );
+
   assert.deepEqual(
     normalizeArtifactSourceRef({
       workingDirectory: 'workspace',

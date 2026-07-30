@@ -94,6 +94,8 @@ async function initializeWorkerLink(
     initialStdinOnStart: false,
     losslessStdio: false,
     prePersistenceOutputRedaction: false,
+    rawInitialStdinOnStart: false,
+    rawOutputPages: false,
   };
   let closedReason: string | null = null;
   let nextId = 1;

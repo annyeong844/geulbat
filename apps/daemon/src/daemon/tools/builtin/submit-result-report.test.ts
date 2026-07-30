@@ -30,12 +30,14 @@ void test('submit_result_report records a child summary without replacing final 
       workingDirectory: '/workspace',
     },
   });
+  const workingDirectory = runState.workingDirectory;
+  assert.ok(workingDirectory);
   const baseContext = {
     kind: 'agent' as const,
     callId: 'call-submit-result-report',
     runId: runState.runId,
     stateRoot: runState.stateRoot,
-    workingDirectory: runState.workingDirectory,
+    workingDirectory,
     threadId,
     runState,
     signal: undefined,

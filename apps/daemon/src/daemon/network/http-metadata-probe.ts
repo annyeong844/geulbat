@@ -1,11 +1,5 @@
-import http from 'node:http';
-import https from 'node:https';
-import {
-  guardedLookupPublicAddress,
-  parseHttpUrl,
-  type HttpLookup,
-} from './http-url-guard.js';
-import { runDetached } from '../utils/run-detached.js';
+import { parseHttpUrl, type HttpLookup } from './http-url-guard.js';
+import type { PublicHttpReadRuntime } from '../utils/public-http-read-port.js';
 
 export const REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID =
   'react_bundle_dependency_cdn_v1';
@@ -107,6 +101,44 @@ export type HttpMetadataProbeRequestTransport = (
   },
 ) => Promise<HttpMetadataProbeTransportResponse>;
 
+export function createPublicHttpReadMetadataProbeTransport(
+  runtime: PublicHttpReadRuntime,
+): HttpMetadataProbeRequestTransport {
+  return async (url, options) => {
+    const response = await runtime.request({
+      url: url.href,
+      method: options.method,
+      headers: {
+        accept: '*/*',
+        'accept-encoding': 'identity',
+        'user-agent': 'geulbat-dependency-metadata-probe/1',
+      },
+      responseBodyMode: 'discard',
+      ...(options.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: options.timeoutMs }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    if (!response.ok) {
+      throw new HttpMetadataProbeRuntimeError(
+        response.reasonCode === 'dns_blocked'
+          ? 'dns_blocked'
+          : response.reasonCode === 'timeout'
+            ? 'timeout'
+            : 'network_error',
+        response.message,
+      );
+    }
+    return {
+      status: response.status,
+      location: response.location,
+      contentType: response.contentType,
+      contentLength: response.contentLength,
+      bytesRead: 0,
+    };
+  };
+}
+
 export async function probeHttpMetadata(args: {
   url: string;
   lookup?: HttpLookup;
@@ -127,7 +159,7 @@ export async function probeHttpMetadata(args: {
       : {}),
     startedAtMs,
     now,
-    transport: args.transport ?? requestHttpMetadata,
+    transport: args.transport ?? unavailableMetadataProbeTransport,
     ...(args.lookup ? { lookup: args.lookup } : {}),
     ...(args.signal ? { signal: args.signal } : {}),
   });
@@ -413,126 +445,13 @@ function probePolicy(): HttpMetadataProbePolicy {
   };
 }
 
-export function requestHttpMetadata(
-  url: URL,
-  options: {
-    method: HttpMetadataProbeMethod;
-    lookup?: HttpLookup;
-    signal?: AbortSignal;
-    timeoutMs?: number;
-  },
-): Promise<HttpMetadataProbeTransportResponse> {
-  if (options.signal?.aborted) {
-    return Promise.reject(
-      new HttpMetadataProbeRuntimeError(
-        'network_error',
-        'dependency metadata probe aborted',
-      ),
-    );
-  }
-
-  const client = url.protocol === 'https:' ? https : http;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (callback: () => void, cleanup: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      callback();
-    };
-
-    const request = client.request(
-      url,
-      {
-        method: options.method,
-        ...(options.timeoutMs !== undefined
-          ? { timeout: options.timeoutMs }
-          : {}),
-        headers: {
-          accept: '*/*',
-          'accept-encoding': 'identity',
-          'user-agent': 'geulbat-dependency-metadata-probe/1',
-        },
-        lookup(hostname, _lookupOptions, callback) {
-          runDetached('network/metadata-probe-lookup', () =>
-            guardedLookupPublicAddress(hostname, {
-              ...(options.lookup ? { lookup: options.lookup } : {}),
-              label: 'dependency metadata probe',
-            })
-              .then((record) => {
-                callback(null, record.address, record.family);
-              })
-              .catch((error: unknown) => {
-                const message =
-                  error instanceof Error ? error.message : String(error);
-                callback(
-                  new HttpMetadataProbeRuntimeError('dns_blocked', message),
-                  '',
-                  4,
-                );
-              }),
-          );
-        },
-      },
-      (response) => {
-        finish(() => {
-          resolve({
-            status: response.statusCode ?? 0,
-            location: readHeader(response.headers.location),
-            contentType: readHeader(response.headers['content-type']),
-            contentLength: readContentLength(
-              response.headers['content-length'],
-            ),
-            bytesRead: 0,
-          });
-          response.destroy();
-        }, cleanup);
-        response.on('error', (error) => finish(() => reject(error), cleanup));
-      },
-    );
-
-    const abort = () =>
-      request.destroy(
-        new HttpMetadataProbeRuntimeError(
-          'network_error',
-          'dependency metadata probe aborted',
-        ),
-      );
-    const cleanup = () => {
-      options.signal?.removeEventListener('abort', abort);
-    };
-    options.signal?.addEventListener('abort', abort, { once: true });
-    request.on('timeout', () =>
-      request.destroy(
-        new HttpMetadataProbeRuntimeError(
-          'timeout',
-          'dependency metadata probe timeout',
-        ),
-      ),
-    );
-    request.on('error', (error) => finish(() => reject(error), cleanup));
-    request.end();
-  });
-}
-
-function readHeader(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) {
-    return value[0] ?? null;
-  }
-  return value ?? null;
-}
-
-function readContentLength(
-  value: string | string[] | undefined,
-): number | null {
-  const header = readHeader(value);
-  if (!header) {
-    return null;
-  }
-  const parsed = Number(header);
-  return Number.isFinite(parsed) ? parsed : null;
+function unavailableMetadataProbeTransport(): Promise<HttpMetadataProbeTransportResponse> {
+  return Promise.reject(
+    new HttpMetadataProbeRuntimeError(
+      'network_error',
+      'Host-routed public HTTP transport is unavailable.',
+    ),
+  );
 }
 
 interface ProbeContext {

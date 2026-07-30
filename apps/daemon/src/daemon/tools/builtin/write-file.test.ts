@@ -428,7 +428,7 @@ void test('write_file rejects overwriting an existing file without a versionToke
 
   const result = await writeFileTool.execute(
     { path: 'hello.txt', content: 'updated\n' },
-    { callId: 'call-write-1', computerFileRoot },
+    { callId: 'call-write-1', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, false);
@@ -441,7 +441,7 @@ void test('write_file allows creating a new file without a versionToken', async 
 
   const result = await writeFileTool.execute(
     { path: 'new.txt', content: 'created\n' },
-    { callId: 'call-write-2', computerFileRoot },
+    { callId: 'call-write-2', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, true);
@@ -482,6 +482,7 @@ void test('write_file creates and overwrites files in ComputerFileScope', async 
     {
       callId: 'call-computer-write-create',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 
@@ -499,6 +500,7 @@ void test('write_file creates and overwrites files in ComputerFileScope', async 
     {
       callId: 'call-computer-write-overwrite',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 
@@ -525,6 +527,7 @@ void test('write_file preserves stale-write detection in the computer root', asy
     {
       callId: 'call-computer-write-stale',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 
@@ -554,6 +557,7 @@ void test('write_file updates a symlink target regardless of its filename', asyn
     {
       callId: 'call-computer-write-reserved-alias',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 
@@ -610,7 +614,7 @@ void test('write_file overwrites an existing file when a valid versionToken is p
       content: 'updated\n',
       versionToken: file.versionToken,
     },
-    { callId: 'call-write-3', computerFileRoot },
+    { callId: 'call-write-3', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, true);
@@ -636,7 +640,12 @@ void test('write_file invalidates injected file state cache after a successful o
       content: 'updated\n',
       versionToken: file.versionToken,
     },
-    { callId: 'call-write-cache-invalidate', computerFileRoot, fileStateCache },
+    {
+      callId: 'call-write-cache-invalidate',
+      computerFileRoot,
+      workingDirectory: '',
+      fileStateCache,
+    },
   );
 
   assert.equal(result.ok, true);
@@ -657,7 +666,7 @@ void test('write_file rejects stale versionToken overwrites', async () => {
       content: 'updated\n',
       versionToken: stale.versionToken,
     },
-    { callId: 'call-write-4', computerFileRoot },
+    { callId: 'call-write-4', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, false);
@@ -677,7 +686,7 @@ void test('write_file rejects old source paths after rename when a versionToken 
       content: 'updated\n',
       versionToken: file.versionToken,
     },
-    { callId: 'call-write-5', computerFileRoot },
+    { callId: 'call-write-5', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, false);
@@ -699,7 +708,7 @@ void test('write_file rejects old source paths after move when a versionToken is
       content: 'updated\n',
       versionToken: file.versionToken,
     },
-    { callId: 'call-write-6', computerFileRoot },
+    { callId: 'call-write-6', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, false);
@@ -714,7 +723,11 @@ void test('write_file rejects deleted source paths after manage_files delete whe
 
   const deleteResult = await manageFilesTool.execute(
     { operation: 'delete', path: 'hello.txt' },
-    { callId: 'call-manage-delete-write', computerFileRoot },
+    {
+      callId: 'call-manage-delete-write',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
   assert.equal(deleteResult.ok, true);
 
@@ -724,7 +737,11 @@ void test('write_file rejects deleted source paths after manage_files delete whe
       content: 'updated\n',
       versionToken: file.versionToken,
     },
-    { callId: 'call-write-delete', computerFileRoot },
+    {
+      callId: 'call-write-delete',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);

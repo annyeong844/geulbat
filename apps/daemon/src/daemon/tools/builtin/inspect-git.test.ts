@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after, type TestContext } from 'node:test';
@@ -37,6 +37,20 @@ void test('inspect_git exposes only fixed read operations without approval', () 
       '--literal-pathspecs',
       '-c',
       'color.ui=false',
+      '-c',
+      'core.fsmonitor=false',
+      '-c',
+      'diff.autoRefreshIndex=false',
+      '-c',
+      'diff.external=',
+      '-c',
+      'diff.renames=false',
+      '-c',
+      'submodule.recurse=false',
+      '-c',
+      'fetch.recurseSubmodules=false',
+      '-c',
+      'credential.helper=',
       'diff',
       '--no-ext-diff',
       '--no-textconv',
@@ -119,6 +133,34 @@ void test('inspect_git preserves Git diagnostics outside a repository', async (t
   assert.match(output.stderr, /not a git repository/u);
 });
 
+void test('inspect_git ignores ambient repository redirection and trace targets', async (t) => {
+  const repositoryRoot = await createRepositoryFixture(t);
+  const redirectedRepositoryRoot = await createRepositoryFixture(t);
+  const tracePath = join(repositoryRoot, 'ambient-trace.json');
+  await writeFile(join(repositoryRoot, 'tracked.txt'), 'changed\n', 'utf8');
+  setProcessEnvironmentForTest(
+    t,
+    'GIT_DIR',
+    join(redirectedRepositoryRoot, '.git'),
+  );
+  setProcessEnvironmentForTest(
+    t,
+    'GIT_INDEX_FILE',
+    join(redirectedRepositoryRoot, '.git', 'index'),
+  );
+  setProcessEnvironmentForTest(t, 'GIT_TRACE2_EVENT', tracePath);
+
+  const result = await inspectGitTool.execute(
+    { operation: 'status' },
+    createToolContext(repositoryRoot),
+  );
+
+  assert.equal(result.ok, true);
+  const output = JSON.parse(result.output) as { stdout: string };
+  assert.match(output.stdout, / M tracked\.txt$/mu);
+  await assert.rejects(access(tracePath), { code: 'ENOENT' });
+});
+
 async function createRepositoryFixture(t: TestContext): Promise<string> {
   const repositoryRoot = await mkdtemp(join(tmpdir(), 'geulbat-git-inspect-'));
   t.after(async () => {
@@ -131,6 +173,22 @@ async function createRepositoryFixture(t: TestContext): Promise<string> {
   runGit(repositoryRoot, ['add', 'tracked.txt']);
   runGit(repositoryRoot, ['commit', '--quiet', '-m', 'initial commit']);
   return repositoryRoot;
+}
+
+function setProcessEnvironmentForTest(
+  t: TestContext,
+  name: string,
+  value: string,
+): void {
+  const previous = process.env[name];
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env[name];
+      return;
+    }
+    process.env[name] = previous;
+  });
+  process.env[name] = value;
 }
 
 function runGit(cwd: string, args: string[]): void {

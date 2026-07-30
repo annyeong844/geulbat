@@ -332,6 +332,59 @@ void test('Qwen stable request owner failure propagates without direct fetch fal
   assert.equal(fetchCalls, 0);
 });
 
+void test('Qwen defers a stream-reported provider failure before releasing stable admission', async () => {
+  const order: string[] = [];
+
+  await assert.rejects(
+    streamQwenChatCompletions(
+      {
+        config: CONFIG,
+        history: [{ kind: 'user', text: 'Hello' }],
+        providerReplayScopeId: REPLAY_SCOPE,
+        providerSessionId: 'qwen-stable-session',
+        requestAttempt: 0,
+        providerRequestSessions: {
+          deferProviderRequests(url, retryAfterMs) {
+            assert.equal(url, CONFIG.chatCompletionsUrl);
+            assert.equal(retryAfterMs, 1_900);
+            order.push('provider_deferred');
+          },
+          streamDurableHttpSseEvents: async function* () {
+            try {
+              yield {
+                error: {
+                  code: 'throttled',
+                  message: 'provider overloaded',
+                },
+              };
+            } finally {
+              order.push('admission_released');
+            }
+          },
+        },
+        resolveProviderAdmissionFallbackDelayMs(error) {
+          assert.ok(error instanceof Error);
+          assert.equal(error.message, 'Qwen event stream reported an error');
+          order.push('fallback_resolved');
+          return 1_900;
+        },
+      },
+      {
+        fetchImpl: (async () => {
+          throw new Error('direct fetch path must not run');
+        }) as typeof fetch,
+      },
+    ),
+    /Qwen event stream reported an error/u,
+  );
+
+  assert.deepEqual(order, [
+    'fallback_resolved',
+    'provider_deferred',
+    'admission_released',
+  ]);
+});
+
 void test('Qwen request preparation stops before the HTTP boundary', async () => {
   let fetchCalled = false;
   await assert.rejects(

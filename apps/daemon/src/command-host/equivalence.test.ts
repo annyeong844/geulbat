@@ -192,6 +192,50 @@ for (const mode of MODES) {
     }
   });
 
+  void test(`[${mode}] raw pages preserve NUL and invalid UTF-8 bytes exactly`, async (t) => {
+    const fixture = await makeFixture(t, mode);
+    const started = await fixture.runtime.start(
+      startArgs(
+        fixture,
+        'const output = Buffer.alloc(3000, 0xff); output[10] = 0; process.stdout.write(output);',
+      ),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+    const claimed = await fixture.runtime.waitForInitialResult({
+      stateRoot: fixture.stateRoot,
+      outputRef: started.outputRef,
+    });
+    assert.equal(claimed.ok, true);
+    if (!claimed.ok) {
+      return;
+    }
+
+    const page = await fixture.runtime.interact({
+      stateRoot: fixture.stateRoot,
+      threadId: THREAD,
+      outputRef: started.outputRef,
+      page: {
+        stream: 'stdout',
+        offsetBytes: 10,
+        limitBytes: 16,
+        encoding: 'base64',
+      },
+    });
+    assert.equal(page.ok, true);
+    if (page.ok) {
+      assert.equal(page.value.page?.contentEncoding, 'base64');
+      assert.deepEqual(
+        Buffer.from(page.value.page?.content ?? '', 'base64'),
+        Buffer.from([0, ...Buffer.alloc(15, 0xff)]),
+      );
+      assert.equal(page.value.page?.offsetBytes, 10);
+      assert.equal(page.value.page?.endOffsetBytes, 26);
+    }
+  });
+
   void test(`[${mode}] a non-zero exit is a command status, not a tool failure`, async (t) => {
     const fixture = await makeFixture(t, mode);
     const started = await fixture.runtime.start(

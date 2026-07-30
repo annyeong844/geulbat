@@ -34,6 +34,18 @@ export type ToolRecoveryStrategy =
   | 'durable_handle'
   | 'at_least_once';
 
+export function isToolRecoveryStrategy(
+  value: unknown,
+): value is ToolRecoveryStrategy {
+  return (
+    value === 'replay_safe' ||
+    value === 'idempotency_key' ||
+    value === 'reconcile_then_replay' ||
+    value === 'durable_handle' ||
+    value === 'at_least_once'
+  );
+}
+
 export type ExecuteResult =
   | { ok: true; output: string; errorCode?: undefined; error?: undefined }
   | {

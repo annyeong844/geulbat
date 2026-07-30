@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   resolveQwenContextCapacityPolicy,
+  streamQwenChatCompletions,
   summarizeQwenHistory,
   type QwenChatCompletionsInput,
   type QwenTokenPlanConfig,
@@ -31,6 +32,7 @@ void test('Qwen summary compaction uses the selected model with its required thi
         },
       ],
       model: 'qwen3.8-max-preview',
+      providerSessionId: 'thread-summary',
     },
     resolveQwenContextCapacityPolicy('qwen3.8-max-preview'),
     {
@@ -75,6 +77,8 @@ void test('Qwen summary compaction uses the selected model with its required thi
   assert.equal(observed?.enableThinking, true);
   assert.equal(observed?.maxTokens, 20_000);
   assert.equal(observed?.tools, undefined);
+  assert.equal(observed?.providerSessionId, 'qwen-summary:thread-summary');
+  assert.equal(observed?.requestAttempt, 0);
   assert.match(observed?.instructions ?? '', /continuation summary/u);
   assert.equal(observed?.history.at(-1)?.kind, 'user');
   assert.deepEqual(result, {
@@ -94,6 +98,7 @@ void test('Qwen summary compaction fails closed without exact output usage', asy
       {
         historyPrefix: [{ kind: 'user', text: 'Older context.' }],
         model: 'qwen3.8-max-preview',
+        providerSessionId: 'thread-summary',
       },
       resolveQwenContextCapacityPolicy('qwen3.8-max-preview'),
       {
@@ -108,4 +113,31 @@ void test('Qwen summary compaction fails closed without exact output usage', asy
     ),
     /exact output token usage/u,
   );
+});
+
+void test('Qwen summary compaction fails closed before direct fetch when its durable owner is unavailable', async () => {
+  let directFetchCalls = 0;
+  await assert.rejects(
+    summarizeQwenHistory(
+      {
+        historyPrefix: [{ kind: 'user', text: 'Older context.' }],
+        model: 'qwen3.8-max-preview',
+        providerSessionId: 'thread-summary',
+        providerRequestSessions: {},
+      },
+      resolveQwenContextCapacityPolicy('qwen3.8-max-preview'),
+      {
+        loadConfig: async () => CONFIG,
+        streamChatCompletions: async (input) =>
+          await streamQwenChatCompletions(input, {
+            fetchImpl: async () => {
+              directFetchCalls += 1;
+              throw new Error('direct fetch must not run');
+            },
+          }),
+      },
+    ),
+    /durable provider request transport is unavailable/u,
+  );
+  assert.equal(directFetchCalls, 0);
 });

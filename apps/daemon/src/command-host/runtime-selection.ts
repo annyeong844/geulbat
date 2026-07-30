@@ -56,7 +56,7 @@ export interface DaemonHostCommandRuntime
 interface DaemonHostCommandRuntimeOptions {
   config: CommandSessionHostConfig;
   requestedMode?: CommandHostMode;
-  workerCommand?: { execPath: string; args: string[] };
+  workerCommand?: { execPath: string; args: readonly string[] };
 }
 
 type LeaseOutcome =

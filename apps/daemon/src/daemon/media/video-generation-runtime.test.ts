@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +20,7 @@ import {
   writeThreadMediaFile,
 } from '../sessions/media-file-store.js';
 import { threadMediaDirPath } from '../sessions/paths.js';
+import type { PublicHttpReadRuntime } from '../utils/public-http-read-port.js';
 import {
   createMediaGenerationRecoveryIdentity,
   ImageGenerationError,
@@ -27,6 +29,7 @@ import {
   createVideoGenerationRuntime,
   type VideoGenerationRuntimeDeps,
 } from './video-generation-runtime.js';
+import { generateVideoViaGrok } from './providers/grok-video-provider.js';
 
 const THREAD_ID = '11111111-1111-4111-8111-111111111111' as ThreadId;
 const OTHER_THREAD_ID = '22222222-2222-4222-8222-222222222222' as ThreadId;
@@ -55,6 +58,25 @@ interface CommitCall {
   title: string | null | undefined;
 }
 
+function createPublicHttpReadRuntime(
+  body: Uint8Array,
+  onRequest?: (url: string) => void,
+): PublicHttpReadRuntime {
+  return {
+    async request(input) {
+      onRequest?.(input.url);
+      return {
+        ok: true,
+        status: 200,
+        location: null,
+        contentType: 'video/mp4',
+        contentLength: body.byteLength,
+        bodyBase64: Buffer.from(body).toString('base64'),
+      };
+    },
+  };
+}
+
 function buildDeps(overrides: Partial<VideoGenerationRuntimeDeps>): {
   deps: VideoGenerationRuntimeDeps;
   commits: CommitCall[];
@@ -75,7 +97,7 @@ function buildDeps(overrides: Partial<VideoGenerationRuntimeDeps>): {
       durationSeconds: 5,
       model: 'grok-imagine-video-1.5',
     }),
-    downloadFetchImpl: async () => new Response(FAKE_MP4, { status: 200 }),
+    publicHttpRead: createPublicHttpReadRuntime(FAKE_MP4),
     commitThreadArtifactVersionImpl: async (
       args: CommitThreadArtifactVersionArgs,
     ) => {
@@ -127,6 +149,19 @@ async function withTempRoot(
     await run(root);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function readThreadMediaEntries(root: string): Promise<string[]> {
+  try {
+    return (await readdir(threadMediaDirPath(root, THREAD_ID))).filter(
+      (entry) => entry !== '.generation-operations',
+    );
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
   }
 }
 
@@ -381,10 +416,9 @@ void test('generateVideoArtifact fails closed on missing, non-image, or malforme
 void test('generateVideoArtifact rejects non-video bytes before touching disk', async () => {
   await withTempRoot(async (root) => {
     const { deps, commits } = buildDeps({
-      downloadFetchImpl: async () =>
-        new Response(new TextEncoder().encode('<html>not a video</html>'), {
-          status: 200,
-        }),
+      publicHttpRead: createPublicHttpReadRuntime(
+        new TextEncoder().encode('<html>not a video</html>'),
+      ),
     });
     await assert.rejects(
       createVideoGenerationRuntime(deps).generateVideoArtifact(baseInput(root)),
@@ -394,7 +428,7 @@ void test('generateVideoArtifact rejects non-video bytes before touching disk', 
     );
     assert.equal(commits.length, 0);
     // 형식 밖 바이트는 디스크에 닿지 않는다
-    await assert.rejects(readdir(threadMediaDirPath(root, THREAD_ID)));
+    assert.deepEqual(await readThreadMediaEntries(root), []);
   });
 });
 
@@ -541,6 +575,144 @@ void test('generateVideoArtifact replacement resumes the durably captured provid
   });
 });
 
+void test('generateVideoArtifact replacement replays isolated poll and download GETs without another create', async () => {
+  await withTempRoot(async (root) => {
+    const input = {
+      ...baseInput(root),
+      runId: 'run-video-read-owner-recovery',
+    };
+    const identity = createMediaGenerationRecoveryIdentity({
+      kind: 'video',
+      threadId: THREAD_ID,
+      runId: input.runId,
+      callId: 'call-video-read-owner-recovery',
+      toolArgs: { prompt: input.request.prompt },
+    });
+    const first = createVideoGenerationRuntime(
+      buildDeps({
+        generateViaGrokImpl: async (providerInput) => {
+          assert.ok(providerInput.onRequestCreated);
+          await providerInput.onRequestCreated('request-read-owner');
+          throw new Error('simulated daemon death before polling');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      first.generateVideoArtifact({
+        ...input,
+        recovery: { callId: 'call-video-read-owner-recovery', identity },
+      }),
+      /before polling/u,
+    );
+    assert.deepEqual(await readThreadMediaEntries(root), []);
+
+    let downloadAttempts = 0;
+    const readCalls: Array<{
+      method: string;
+      url: string;
+      maxResponseBytes: number | undefined;
+    }> = [];
+    const publicHttpRead: PublicHttpReadRuntime = {
+      async request(readInput) {
+        readCalls.push({
+          method: readInput.method,
+          url: readInput.url,
+          maxResponseBytes: readInput.maxResponseBytes,
+        });
+        if (readInput.url.endsWith('/videos/request-read-owner')) {
+          const body = Buffer.from(
+            JSON.stringify({
+              status: 'done',
+              video: {
+                url: 'https://signed.example/recovered.mp4',
+                duration: 5,
+              },
+            }),
+          );
+          return {
+            ok: true,
+            status: 200,
+            location: null,
+            contentType: 'application/json',
+            contentLength: body.byteLength,
+            bodyBase64: body.toString('base64'),
+          };
+        }
+        assert.equal(readInput.url, 'https://signed.example/recovered.mp4');
+        downloadAttempts += 1;
+        if (downloadAttempts === 1) {
+          return {
+            ok: false,
+            reasonCode: 'network_error',
+            message: 'simulated download interruption',
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          location: null,
+          contentType: 'video/mp4',
+          contentLength: FAKE_MP4.byteLength,
+          bodyBase64: Buffer.from(FAKE_MP4).toString('base64'),
+        };
+      },
+    };
+    const buildReplacement = () =>
+      createVideoGenerationRuntime(
+        buildDeps({
+          publicHttpRead,
+          generateViaGrokImpl: (providerInput) =>
+            generateVideoViaGrok({
+              ...providerInput,
+              sleepImpl: async () => {},
+              pollIntervalMs: 1,
+              pollTimeoutMs: 1_000,
+            }),
+          statThreadMediaFileImpl: statThreadMediaFile,
+          commitThreadArtifactVersionImpl: commitThreadArtifactVersion,
+        }).deps,
+      );
+
+    await assert.rejects(
+      buildReplacement().generateVideoArtifact({
+        ...input,
+        recovery: { callId: 'call-video-read-owner-recovery', identity },
+      }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'provider_network_failed',
+    );
+    assert.deepEqual(await readThreadMediaEntries(root), []);
+
+    const recovered = await buildReplacement().generateVideoArtifact({
+      ...input,
+      recovery: { callId: 'call-video-read-owner-recovery', identity },
+    });
+
+    assert.deepEqual(
+      readCalls.map((call) => [call.method, call.url]),
+      [
+        ['GET', 'https://api.x.ai/v1/videos/request-read-owner'],
+        ['GET', 'https://signed.example/recovered.mp4'],
+        ['GET', 'https://api.x.ai/v1/videos/request-read-owner'],
+        ['GET', 'https://signed.example/recovered.mp4'],
+      ],
+    );
+    assert.equal(
+      readCalls[1]?.maxResponseBytes,
+      readCalls[3]?.maxResponseBytes,
+    );
+    assert.ok((readCalls[3]?.maxResponseBytes ?? 0) >= FAKE_MP4.byteLength);
+    assert.equal(downloadAttempts, 2);
+    assert.equal(recovered.artifactVersion.artifactId, identity.artifactId);
+    assert.match(recovered.media.mediaRef, /^[a-f0-9]{64}\.mp4$/u);
+    assert.equal(
+      (await loadAllThreadArtifactVersions(root, THREAD_ID)).length,
+      1,
+    );
+  });
+});
+
 void test('generateVideoArtifact replacement commits the prepared candidate exactly once after an interrupted settlement', async () => {
   await withTempRoot(async (root) => {
     const input = {
@@ -565,15 +737,14 @@ void test('generateVideoArtifact replacement commits the prepared candidate exac
         model: 'grok-imagine-video-1.5',
       };
     };
-    const download = async () => {
+    const download = createPublicHttpReadRuntime(FAKE_MP4, () => {
       downloads += 1;
-      return new Response(FAKE_MP4, { status: 200 });
-    };
+    });
 
     const first = createVideoGenerationRuntime(
       buildDeps({
         generateViaGrokImpl: generation,
-        downloadFetchImpl: download,
+        publicHttpRead: download,
         statThreadMediaFileImpl: statThreadMediaFile,
         commitThreadArtifactVersionImpl: async (commitInput) => {
           commitAttempts += 1;
@@ -595,7 +766,7 @@ void test('generateVideoArtifact replacement commits the prepared candidate exac
     const replacement = createVideoGenerationRuntime(
       buildDeps({
         generateViaGrokImpl: generation,
-        downloadFetchImpl: download,
+        publicHttpRead: download,
         statThreadMediaFileImpl: statThreadMediaFile,
         commitThreadArtifactVersionImpl: async (commitInput) => {
           commitAttempts += 1;

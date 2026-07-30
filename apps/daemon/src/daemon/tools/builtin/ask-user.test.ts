@@ -34,7 +34,29 @@ void test('질문과 옵션 수를 확인 응답으로 돌려준다', async () =
   );
 
   assert.equal(result.ok, true);
-  assert.deepEqual(JSON.parse(result.output), { asked: true, optionCount: 2 });
+  assert.deepEqual(JSON.parse(result.output), {
+    asked: true,
+    purpose: 'decision',
+    optionCount: 2,
+  });
+});
+
+void test('심층 계획의 목표 이해 확인 목적을 보존한다', async () => {
+  const result = await askUserTool.execute(
+    {
+      purpose: 'understanding_confirmation',
+      question: '제가 이해한 목표가 맞나요?',
+      options: [{ label: '맞아요' }, { label: '수정할게요' }],
+    },
+    { callId: 'call_understanding' },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(result.output), {
+    asked: true,
+    purpose: 'understanding_confirmation',
+    optionCount: 2,
+  });
 });
 
 void test('공백 질문은 실패한다', async () => {

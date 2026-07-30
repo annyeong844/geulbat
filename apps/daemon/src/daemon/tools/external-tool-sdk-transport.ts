@@ -17,6 +17,7 @@ import {
 } from '@geulbat/tool-sdk';
 
 import { readToolOutputSnapshot } from '../files/tool-output-store.js';
+import { isRecord, tryParseJsonRecord } from '../runtime-json.js';
 import { executeTool } from './executor.js';
 import {
   DAEMON_TOOL_SDK_PUBLIC_BINDINGS,
@@ -643,13 +644,8 @@ function applyInvocationSignal(
 function readToolResultObject(
   output: string,
 ): ToolSdkResult<Record<string, unknown>> {
-  let value: unknown;
-  try {
-    value = JSON.parse(output);
-  } catch {
-    return invalidToolResult();
-  }
-  return isRecord(value) ? { ok: true, value } : invalidToolResult();
+  const parsed = tryParseJsonRecord(output);
+  return parsed.ok ? parsed : invalidToolResult();
 }
 
 function invalidToolResult(): ToolSdkFailure {
@@ -798,10 +794,6 @@ function cloneJsonValue(
 function isJsonObjectValue(
   value: ToolSdkJsonValue,
 ): value is Readonly<Record<string, ToolSdkJsonValue>> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 

@@ -24,6 +24,7 @@ const bundledWorkspacePackages = Object.freeze({
 // exports so dev bundling and npm distribution resolve the same owner.
 const daemonSubpathSourceOverrides = Object.freeze({
   'loop-implementation-admission': 'daemon/agent/loop-implementation-admission',
+  'prompt-component-identity': 'daemon/agent/loop-prompt',
   // package export `./instance-admission-lock` → dist/daemon/daemon-instance-admission-lock.js
   'instance-admission-lock': 'daemon/daemon-instance-admission-lock',
   'process-fatal-logging': 'daemon/utils/process-fatal-logging',
@@ -130,6 +131,13 @@ export async function createDaemonDevBundleBuilder({
     root,
     'apps/daemon/src/daemon/llm/provider/transport/responses-durable-request-host-main.ts',
   ),
+  // Public-web reads use the same command-host lifetime boundary. This child
+  // owns DNS pinning and the HTTP socket; the daemon only consumes its
+  // lossless terminal result.
+  publicHttpReadHostEntryPoint = join(
+    root,
+    'apps/daemon/src/command-host/public-http-read-host-main.ts',
+  ),
   // daemon lifecycle worker도 제품 프로세스와 독립된 IPC 프로세스다.
   // 패키지 빌드의 worker.js와 같은 역할을 dev 번들 옆 mjs가 맡는다.
   daemonLifecycleWorkerEntryPoint = join(
@@ -147,6 +155,7 @@ export async function createDaemonDevBundleBuilder({
     'command-host': commandHostEntryPoint,
     'ptc-callback-host': ptcCallbackHostEntryPoint,
     'responses-request-host': responsesRequestHostEntryPoint,
+    'public-http-read-host': publicHttpReadHostEntryPoint,
     'daemon-lifecycle-worker': daemonLifecycleWorkerEntryPoint,
   };
   await mkdir(outputDirectory, { recursive: true });

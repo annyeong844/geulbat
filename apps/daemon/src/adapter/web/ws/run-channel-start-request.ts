@@ -25,7 +25,7 @@ import { resolveRunAttachments } from './run-attachment-input.js';
 interface NormalizedRunStartRequest {
   prompt: string;
   transcriptPrompt: string;
-  workingDirectory: string;
+  workingDirectory: string | undefined;
   modelId: RunStartRequest['modelId'];
   currentFile: RunStartRequest['currentFile'];
   selection: RunStartRequest['selection'];
@@ -245,7 +245,7 @@ export async function readWorkingDirectory(
   request: Pick<RunStartRequest, 'workingDirectory'>,
   args: { computerFileScope: ComputerFileScope },
 ): Promise<
-  | { ok: true; workingDirectory: string }
+  | { ok: true; workingDirectory: string | undefined }
   | {
       ok: false;
       status: 400 | 404;
@@ -253,8 +253,10 @@ export async function readWorkingDirectory(
       message: string;
     }
 > {
-  const requestedPath =
-    request.workingDirectory ?? args.computerFileScope.browseStartPath ?? '';
+  const requestedPath = request.workingDirectory;
+  if (requestedPath === undefined) {
+    return { ok: true, workingDirectory: undefined };
+  }
   try {
     const target = await resolveSourceDirectoryTarget(
       args.computerFileScope.root,

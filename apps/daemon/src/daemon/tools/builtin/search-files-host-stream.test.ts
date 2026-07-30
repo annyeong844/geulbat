@@ -95,6 +95,81 @@ void test('delivers a trailing line that has no newline', async (t) => {
   assert.deepEqual(sink.lines, ['first', 'second']);
 });
 
+void test('drains stdout again when stderr first observes terminal status', async (t) => {
+  const { host, stateRoot } = await makeHost(t, { inlineMaxBytes: 64 });
+  const releasePath = join(stateRoot, 'release-tail');
+  const interact = host.interact.bind(host);
+  let terminalForcedBetweenDrains = false;
+  const routedHost: CommandSessionHost = {
+    ...host,
+    async interact(args) {
+      const observed = await interact(args);
+      if (
+        terminalForcedBetweenDrains ||
+        !observed.ok ||
+        args.page?.stream !== 'stdout' ||
+        observed.value.snapshot.status !== 'running'
+      ) {
+        return observed;
+      }
+
+      // stdout의 현재 page가 반환된 뒤에만 자식이 꼬리를 쓰고 끝나게 한다.
+      // 이어지는 stderr 조회는 terminal을 보지만, 방금 생긴 stdout 꼬리는
+      // 다음 stdout drain에서만 읽을 수 있다.
+      terminalForcedBetweenDrains = true;
+      await writeFile(releasePath, 'release\n', 'utf8');
+      let snapshot = observed.value.snapshot;
+      while (snapshot.status === 'running') {
+        const waited = await interact({
+          stateRoot: args.stateRoot,
+          threadId: args.threadId,
+          outputRef: args.outputRef,
+          ...(args.owner === undefined ? {} : { owner: args.owner }),
+          afterRevision: snapshot.revision,
+        });
+        if (!waited.ok) {
+          throw new Error(
+            `failed to force terminal search state: ${waited.message}`,
+          );
+        }
+        snapshot = waited.value.snapshot;
+      }
+      return observed;
+    },
+  };
+  const sink = createLineSink();
+  const streamed = await streamHostRoutedCommandLines({
+    hostCommands: routedHost,
+    stateRoot,
+    executable: process.execPath,
+    commandArgs: [
+      '-e',
+      [
+        "const { existsSync } = require('node:fs');",
+        `const releasePath = ${JSON.stringify(releasePath)};`,
+        "process.stdout.write('before\\n', () => {",
+        '  const finish = () => {',
+        '    if (!existsSync(releasePath)) {',
+        '      setImmediate(finish);',
+        '      return;',
+        '    }',
+        "    process.stdout.write('after\\n');",
+        '  };',
+        '  finish();',
+        '});',
+      ].join('\n'),
+    ],
+    cwd: stateRoot,
+    env: process.env,
+    pageLimitBytes: 64,
+    onStdoutChunk: sink.onStdoutChunk,
+  });
+  sink.flush();
+  assert.equal(streamed.ok, true);
+  assert.equal(terminalForcedBetweenDrains, true);
+  assert.deepEqual(sink.lines, ['before', 'after']);
+});
+
 void test('keeps multibyte characters intact across page boundaries', async (t) => {
   // 페이지는 바이트 좌표계다 — 경계에서 UTF-8이 쪼개지면 한글 검색 결과가 조용히
   // 깨진다. 세션의 페이지 계약(§4.3)이 경계까지만 건네는지 실제로 확인한다.

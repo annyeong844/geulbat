@@ -86,9 +86,9 @@ void test('text evidence lane keeps base image with warm CDP browser budget', as
   assert.equal(policy.pidsLimit, '512');
   assert.equal(
     policy.scratchTmpfs,
-    '/geulbat/scratch:rw,noexec,nosuid,nodev,size=512m',
+    '/geulbat/scratch:rw,noexec,nosuid,nodev,mode=1777,size=512m',
   );
-  assert.equal(policy.tmpTmpfs, '/tmp:rw,nosuid,nodev,size=512m');
+  assert.equal(policy.tmpTmpfs, '/tmp:rw,nosuid,nodev,mode=1777,size=512m');
 });
 
 void test('default session docker policy pins the untouched base image', () => {

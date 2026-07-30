@@ -85,7 +85,7 @@ void test('read_file returns an explicit page with a continuation offset', async
 
   const result = await readFileTool.execute(
     { path: 'hello.txt', offset: 1, limit: 1 },
-    { callId: 'call-read-page', computerFileRoot },
+    { callId: 'call-read-page', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, true);
@@ -119,11 +119,19 @@ void test('read_file explicit pages preserve full-file versionToken', async () =
 
   const firstPageResult = await readFileTool.execute(
     { path: 'hello.txt', offset: 0, limit: 1 },
-    { callId: 'call-read-token-first-page', computerFileRoot },
+    {
+      callId: 'call-read-token-first-page',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
   const pageResult = await readFileTool.execute(
     { path: 'hello.txt', offset: 1, limit: 1 },
-    { callId: 'call-read-token-page', computerFileRoot },
+    {
+      callId: 'call-read-token-page',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(firstPageResult.ok, true);
@@ -152,12 +160,20 @@ void test('read_file exposes a new versionToken when the file changes between pa
 
   const firstPageResult = await readFileTool.execute(
     { path: 'hello.txt', offset: 0, limit: 1 },
-    { callId: 'call-read-version-before', computerFileRoot },
+    {
+      callId: 'call-read-version-before',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
   await writeFile(filePath, 'a\nchanged\nc\n', 'utf8');
   const secondPageResult = await readFileTool.execute(
     { path: 'hello.txt', offset: 1, limit: 1 },
-    { callId: 'call-read-version-after', computerFileRoot },
+    {
+      callId: 'call-read-version-after',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(firstPageResult.ok, true);
@@ -263,6 +279,7 @@ void test('read_file follows a symlink regardless of its target name', async (t)
     {
       callId: 'call-read-computer-reserved-symlink',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 

@@ -177,7 +177,7 @@ async function createGrokImageRequest(
     }
     const status =
       error !== null && typeof error === 'object'
-        ? Reflect.get(error, 'status')
+        ? (error as Record<PropertyKey, unknown>)['status']
         : undefined;
     if (typeof status === 'number' && Number.isFinite(status)) {
       if (status >= 400) {

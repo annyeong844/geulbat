@@ -1,7 +1,10 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import { createLogger } from '@geulbat/structured-logger/logger';
 
 import type {
   ArtifactRef,
+  ModelSettlementIdentity,
   PlanRenderingStamp,
   RunId,
   ThreadArtifactVersion,
@@ -11,12 +14,17 @@ import type {
 import { assertAgentRunId } from './contract.js';
 
 import type { AgentInput } from './loop-types.js';
-import type { AgentArtifactCandidate, AgentResult } from './agent-result.js';
+import {
+  createAgentResultPersistenceValue,
+  type AgentArtifactCandidate,
+  type AgentResult,
+} from './agent-result.js';
 import type { ResolvedExecuteForegroundRunDeps } from './execute-foreground-run-contracts.js';
 
 const logger = createLogger('agent/assistant-persistence');
 
 interface AssistantTranscriptEntry {
+  entryId?: string;
   role: 'assistant';
   content: string;
   timestamp: string;
@@ -39,12 +47,30 @@ export async function persistForegroundAssistantAnswer(args: {
   const { runId, runContext, currentFile } = agentInput;
   try {
     const planStamp = await resolveForegroundPlanRenderingStamp(agentInput);
+    const modelSettlementTimestamp =
+      result.modelSettlementIdentity === undefined
+        ? undefined
+        : await resolveModelSettlementTimestamp({
+            agentInput,
+            identity: result.modelSettlementIdentity,
+            result,
+          });
     const persistArgs: Parameters<typeof persistAssistantAnswer>[0] = {
       workspaceRoot: runContext.stateRoot,
-      workingDirectory: runContext.workingDirectory,
+      ...(runContext.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: runContext.workingDirectory }),
       threadId: runContext.threadId,
       runId,
       finalProse: result.finalProse,
+      ...(result.modelSettlementIdentity === undefined
+        ? {}
+        : {
+            modelSettlementIdentity: result.modelSettlementIdentity,
+          }),
+      ...(modelSettlementTimestamp === undefined
+        ? {}
+        : { timestamp: modelSettlementTimestamp }),
       onArtifactCommitted: (artifact) => {
         agentInput.onEvent({
           type: 'artifact_committed',
@@ -83,7 +109,7 @@ export async function persistForegroundAssistantAnswer(args: {
 
 async function persistAssistantAnswer(args: {
   workspaceRoot: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   threadId: AgentInput['runContext']['threadId'];
   runId: string;
   currentFile?: string;
@@ -91,6 +117,8 @@ async function persistAssistantAnswer(args: {
   artifactCandidate?: AgentArtifactCandidate;
   toolCommittedArtifactRefs?: readonly ArtifactRef[];
   planStamp?: PlanRenderingStamp;
+  modelSettlementIdentity?: ModelSettlementIdentity;
+  timestamp?: string;
   onArtifactCommitted?: (artifact: ThreadArtifactVersion) => void;
   deps: ResolvedExecuteForegroundRunDeps;
 }): Promise<void> {
@@ -103,20 +131,40 @@ async function persistAssistantAnswer(args: {
     finalProse,
     artifactCandidate,
     planStamp,
+    modelSettlementIdentity,
     onArtifactCommitted,
     deps,
   } = args;
   const sourceRunId = assertAgentRunId(runId);
-  const timestamp = deps.now();
+  if (modelSettlementIdentity !== undefined) {
+    const existing = await findSettledAssistantTranscriptEntry({
+      workspaceRoot,
+      threadId,
+      identity: modelSettlementIdentity,
+      deps,
+    });
+    if (existing !== undefined) {
+      assertSameSettledAssistantTranscriptEntry(existing, {
+        sourceRunId,
+        finalProse,
+        ...(currentFile === undefined ? {} : { currentFile }),
+      });
+      return;
+    }
+  }
+  const timestamp = args.timestamp ?? deps.now();
   const committedArtifact = artifactCandidate
     ? await commitAssistantArtifactCandidate({
         workspaceRoot,
-        workingDirectory,
+        ...(workingDirectory === undefined ? {} : { workingDirectory }),
         threadId,
         runId: sourceRunId,
         ...(currentFile !== undefined ? { currentFile } : {}),
         candidate: artifactCandidate,
         timestamp,
+        ...(modelSettlementIdentity === undefined
+          ? {}
+          : { modelSettlementIdentity }),
         ...(planStamp === undefined ? {} : { planStamp }),
         deps,
       })
@@ -128,6 +176,9 @@ async function persistAssistantAnswer(args: {
     runId: sourceRunId,
     artifactRef: committedArtifact?.ref ?? null,
     ...(planStamp === undefined ? {} : { planStamp }),
+    ...(modelSettlementIdentity === undefined
+      ? {}
+      : { modelSettlementIdentity }),
   };
 
   if (
@@ -143,6 +194,13 @@ async function persistAssistantAnswer(args: {
   }
 
   const assistantEntry: AssistantTranscriptEntry = {
+    ...(modelSettlementIdentity === undefined
+      ? {}
+      : {
+          entryId: createModelSettlementTranscriptEntryId(
+            modelSettlementIdentity,
+          ),
+        }),
     role: 'assistant',
     content: finalProse,
     metadata: buildAssistantTranscriptMetadata(assistantMetadataArgs),
@@ -165,12 +223,13 @@ async function persistAssistantAnswer(args: {
 // 하면 새 아티팩트 생성으로 폴백해 모델 출력물을 잃지 않는다.
 async function commitAssistantArtifactCandidate(args: {
   workspaceRoot: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   threadId: AgentInput['runContext']['threadId'];
   runId: string;
   currentFile?: string;
   candidate: AgentArtifactCandidate;
   timestamp: string;
+  modelSettlementIdentity?: ModelSettlementIdentity;
   planStamp?: PlanRenderingStamp;
   deps: ResolvedExecuteForegroundRunDeps;
 }): Promise<CommittedAssistantArtifact> {
@@ -182,6 +241,7 @@ async function commitAssistantArtifactCandidate(args: {
     currentFile,
     candidate,
     timestamp,
+    modelSettlementIdentity,
     planStamp,
     deps,
   } = args;
@@ -219,6 +279,11 @@ async function commitAssistantArtifactCandidate(args: {
     workspaceRoot,
     threadId,
     runId,
+    ...(modelSettlementIdentity === undefined
+      ? {}
+      : {
+          artifactId: createModelSettlementArtifactId(modelSettlementIdentity),
+        }),
     renderer: candidate.renderer,
     payload: candidate.payload,
     digest: candidate.digest,
@@ -227,7 +292,7 @@ async function commitAssistantArtifactCandidate(args: {
       currentFile !== undefined
         ? {
             kind: 'thread-file',
-            workingDirectory,
+            ...(workingDirectory === undefined ? {} : { workingDirectory }),
             threadId,
             runId,
             filePath: currentFile,
@@ -235,7 +300,7 @@ async function commitAssistantArtifactCandidate(args: {
           }
         : {
             kind: 'thread',
-            workingDirectory,
+            ...(workingDirectory === undefined ? {} : { workingDirectory }),
             threadId,
             runId,
             filePath: null,
@@ -252,10 +317,14 @@ function buildAssistantTranscriptMetadata(args: {
   artifactRef?: ArtifactRef | null;
   toolCommittedArtifactRefs?: readonly ArtifactRef[];
   planStamp?: PlanRenderingStamp;
+  modelSettlementIdentity?: ModelSettlementIdentity;
 }): ThreadMessageMetadata {
   const metadata: ThreadMessageMetadata = {
     phase: 'final_answer',
     sourceRunId: args.runId,
+    ...(args.modelSettlementIdentity === undefined
+      ? {}
+      : { modelSettlementIdentity: args.modelSettlementIdentity }),
   };
   if (args.currentFile) {
     metadata.sourceFile = args.currentFile;
@@ -276,6 +345,90 @@ function buildAssistantTranscriptMetadata(args: {
     metadata.planStamp = args.planStamp;
   }
   return metadata;
+}
+
+async function resolveModelSettlementTimestamp(args: {
+  agentInput: AgentInput;
+  identity: ModelSettlementIdentity;
+  result: AgentResult;
+}): Promise<string> {
+  const checkpoint =
+    await args.agentInput.runtimeServices.runCheckpoints.readThread(
+      args.agentInput.runContext.threadId,
+    );
+  const active = checkpoint?.modelRoundState?.active;
+  if (
+    checkpoint === null ||
+    checkpoint.runId !== args.agentInput.runId ||
+    active === null ||
+    active === undefined ||
+    active.logicalRequestIdentity !== args.identity ||
+    active.settlement?.phase !== 'committed' ||
+    active.settlement.disposition !== 'terminal' ||
+    active.settlement.committedAt === null ||
+    !isDeepStrictEqual(
+      active.settlement.result,
+      createAgentResultPersistenceValue(args.result),
+    )
+  ) {
+    throw new Error(
+      'model settlement timestamp is unavailable for assistant persistence',
+    );
+  }
+  return active.settlement.committedAt;
+}
+
+async function findSettledAssistantTranscriptEntry(args: {
+  workspaceRoot: string;
+  threadId: AgentInput['runContext']['threadId'];
+  identity: ModelSettlementIdentity;
+  deps: ResolvedExecuteForegroundRunDeps;
+}): Promise<ThreadMessage | undefined> {
+  const transcript = await args.deps.readTranscriptEntries(
+    args.workspaceRoot,
+    args.threadId,
+  );
+  const matches = transcript.filter(
+    (entry) =>
+      entry.role === 'assistant' &&
+      entry.metadata?.phase === 'final_answer' &&
+      entry.metadata.modelSettlementIdentity === args.identity,
+  );
+  if (matches.length > 1) {
+    throw new Error('duplicate assistant model settlement identity');
+  }
+  return matches[0];
+}
+
+function assertSameSettledAssistantTranscriptEntry(
+  existing: ThreadMessage,
+  expected: {
+    sourceRunId: RunId;
+    finalProse: string;
+    currentFile?: string;
+  },
+): void {
+  if (
+    existing.role !== 'assistant' ||
+    existing.content !== expected.finalProse ||
+    existing.metadata?.phase !== 'final_answer' ||
+    existing.metadata.sourceRunId !== expected.sourceRunId ||
+    existing.metadata.sourceFile !== expected.currentFile
+  ) {
+    throw new Error('assistant model settlement identity conflict');
+  }
+}
+
+function createModelSettlementArtifactId(
+  identity: ModelSettlementIdentity,
+): string {
+  return `art_model_${identity.slice('sha256:'.length)}`;
+}
+
+function createModelSettlementTranscriptEntryId(
+  identity: ModelSettlementIdentity,
+): string {
+  return `model_settlement_${identity.slice('sha256:'.length)}`;
 }
 
 async function resolveForegroundPlanRenderingStamp(
@@ -324,7 +477,12 @@ async function appendAssistantTranscriptWithArtifactRollback(args: {
   } = args;
 
   try {
-    await deps.appendTranscriptEntry(workspaceRoot, threadId, entry);
+    await deps.appendTranscriptEntry(
+      workspaceRoot,
+      threadId,
+      entry,
+      entry.entryId === undefined ? {} : { ifAbsentEntryId: entry.entryId },
+    );
     notifyCommittedAssistantArtifact(committedArtifact, onArtifactCommitted);
   } catch (error: unknown) {
     try {

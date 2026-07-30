@@ -81,7 +81,10 @@ import {
   createResponsesWebSocketSessionStore,
   type OwnedResponsesWebSocketSessionStore,
 } from './llm/provider/transport/responses-websocket-cache.js';
-import { createHostRoutedResponsesRequestTransport } from './llm/provider/transport/responses-durable-request.js';
+import {
+  createHostRoutedResponsesRequestTransport,
+  type ResponsesDurableRequestRecovery,
+} from './llm/provider/transport/responses-durable-request.js';
 import {
   resolveProviderRequestOptions,
   type ProviderRequestOptions,
@@ -111,6 +114,7 @@ import {
   createHostRoutedDetachedProcessAttacher,
   createHostRoutedDetachedProcessStarter,
 } from './host-routed-detached-process.js';
+import { createHostRoutedPublicHttpReadRuntime } from './host-routed-public-http-read.js';
 import {
   PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
   type PtcExecuteCodePlacementResourceBudget,
@@ -260,6 +264,11 @@ interface DaemonContextOptions {
   hostCommands?: {
     inlineMaxBytes?: number;
     tailRingBytes?: number;
+    requestedMode?: 'inline' | 'worker';
+    workerCommand?: {
+      execPath: string;
+      args: readonly string[];
+    };
   };
   bundledCreatorPluginRoot?: string | undefined;
   computerDirectoryPicker?: ComputerDirectoryPicker | undefined;
@@ -267,6 +276,12 @@ interface DaemonContextOptions {
   subagentLaunchRequests?: SubagentLaunchRequestStore;
   subagentTerminalDeliveries?: SubagentTerminalDeliveryStore;
   providerRequestOptions?: ProviderRequestOptions | undefined;
+  providerRequestWorkerCommand?:
+    | {
+        execPath: string;
+        args: readonly string[];
+      }
+    | undefined;
   reactBundleStructuredOutputIngressPolicy?:
     | ReactBundleStructuredOutputIngressPolicy
     | undefined;
@@ -297,7 +312,7 @@ export interface DaemonContext {
   artifactFrameToolDispatch: (args: {
     threadId: string;
     runId: string;
-    workingDirectory: string;
+    workingDirectory?: string;
     computerSessionId: string;
     toolName: string;
     toolArgs: Record<string, unknown>;
@@ -314,6 +329,7 @@ export interface DaemonContext {
   hostCommands: HostCommandRuntime;
   /** 조립이 호스트를 구성할 때 쓴 inline 결과 예산 — 도구의 페이지 요청 상한이다. */
   hostCommandInlineMaxBytes: number;
+  publicHttpRead: AgentRuntimeServices['publicHttpRead'];
   fileStateCache: FileStateCache;
   provider: DaemonProviderContext;
   imageGeneration: ImageGenerationRuntime;
@@ -350,6 +366,7 @@ export interface DaemonProviderContext {
   authCallbackServer: ProviderAuthCallbackServerController;
   authRuntime: ProviderAuthRuntimeStore;
   credentialFilePermissionHardener: ProviderAuthFilePermissionHardener;
+  durableRequestRecovery: ResponsesDurableRequestRecovery;
   nativeWebSearch?: ProviderNativeWebSearchRuntime;
   requestOptions: ProviderRequestOptions;
   webSocketSessions: OwnedResponsesWebSocketSessionStore;
@@ -370,7 +387,7 @@ function dispatchArtifactFrameToolFromDaemonContext(args: {
   daemonContext: DaemonContext;
   threadId: string;
   runId: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   computerSessionId: string;
   toolName: string;
   toolArgs: Record<string, unknown>;
@@ -382,7 +399,9 @@ function dispatchArtifactFrameToolFromDaemonContext(args: {
     runContext: createRunContext({
       threadId: args.threadId,
       stateRoot: args.daemonContext.homeStateRoot,
-      workingDirectory: args.workingDirectory,
+      ...(args.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: args.workingDirectory }),
     }),
     runId: args.runId,
     approvalContext: {
@@ -457,6 +476,17 @@ export function createDaemonContext(
           .error('terminal persistence failed', error);
       },
     },
+    ...(options.hostCommands?.requestedMode === undefined
+      ? {}
+      : { requestedMode: options.hostCommands.requestedMode }),
+    ...(options.hostCommands?.workerCommand === undefined
+      ? {}
+      : { workerCommand: options.hostCommands.workerCommand }),
+  });
+  const publicHttpRead = createHostRoutedPublicHttpReadRuntime({
+    hostCommands,
+    stateRoot: homeStateRoot,
+    pageLimitBytes: hostCommandInlineMaxBytes,
   });
   // P7.5 §5.6 — 산출물 GC가 보존 집합을 물어볼 지점을 등록한다.
   registerHostCommandActiveSessions(hostCommands);
@@ -574,6 +604,9 @@ export function createDaemonContext(
     stateRoot: homeStateRoot,
     startProcess: startHostRoutedProviderRequest,
     attachProcess: attachHostRoutedProviderRequest,
+    ...(options.providerRequestWorkerCommand === undefined
+      ? {}
+      : { workerCommand: options.providerRequestWorkerCommand }),
     resolveTerminalArtifactPath: (outputRef) =>
       join(
         buildHostCommandPaths({
@@ -597,6 +630,7 @@ export function createDaemonContext(
     authCallbackServer: providerAuthCallbackServer,
     authRuntime: providerAuthRuntime,
     credentialFilePermissionHardener: providerAuthFilePermissionHardener,
+    durableRequestRecovery: durableProviderRequests,
     nativeWebSearch: providerNativeWebSearch,
     requestOptions: providerRequestOptions,
     webSocketSessions: providerWebSocketSessions,
@@ -896,6 +930,7 @@ export function createDaemonContext(
     homeStateRoot,
     hostCommands,
     hostCommandInlineMaxBytes,
+    publicHttpRead,
     fileStateCache: createFileStateCache(),
     provider,
     imageGeneration: createImageGenerationRuntime({
@@ -905,6 +940,7 @@ export function createDaemonContext(
     videoGeneration: createVideoGenerationRuntime({
       providerAuthRuntime: provider.authRuntime,
       providerWebSocketSessions: provider.webSocketSessions,
+      publicHttpRead,
     }),
     globalMcp,
     plugins,

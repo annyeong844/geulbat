@@ -23,6 +23,7 @@ export async function parseResponseEvents(
     idleTimeoutMs?: number;
     historyProjection?: 'normalized' | 'provider_output';
     onFunctionCallArgsDelta?: (delta: FunctionCallArgsDelta) => void;
+    onErrorBeforeIteratorClose?: (error: unknown) => void;
   },
 ): Promise<ResponsesParseResult> {
   const iterator = events[Symbol.asyncIterator]();
@@ -55,6 +56,7 @@ export async function parseResponseEvents(
     }
   } catch (error: unknown) {
     parseError = error;
+    options?.onErrorBeforeIteratorClose?.(error);
     throw error;
   } finally {
     if (typeof iterator.return === 'function') {

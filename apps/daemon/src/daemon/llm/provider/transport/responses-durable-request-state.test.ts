@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -661,6 +668,124 @@ void test('durable request retry resolves only from durable owner evidence', asy
   );
 
   await t.test(
+    'explicit recovery keeps a late terminal artifact for replay',
+    async () => {
+      const pending = await seedPendingDurableRequest(
+        t,
+        'explicit-late-terminal',
+      );
+      await writeFile(
+        pending.terminalPath,
+        `${JSON.stringify({
+          version: RESPONSES_DURABLE_REQUEST_PROTOCOL_VERSION,
+          requestIdentity: pending.requestIdentity,
+          dispatched: true,
+          events: [{ type: 'response.completed', response: { usage: {} } }],
+          terminal: { kind: 'completed' },
+        })}\n`,
+      );
+
+      assert.deepEqual(
+        await pending.transport.recoverOutcomeUnknown({
+          providerSessionId: pending.request.providerSessionId,
+          authorizedByComputerSessionId: 'computer-late-terminal',
+          acknowledgePossibleDuplicateProviderWork: true,
+        }),
+        { ok: true, disposition: 'terminal_available' },
+      );
+      assert.deepEqual(
+        await collectEvents(pending.transport.streamEvents(pending.request)),
+        [{ type: 'response.completed', response: { usage: {} } }],
+      );
+    },
+  );
+
+  await t.test(
+    'explicit recovery preserves an owner that is still attachable',
+    async () => {
+      const pending = await seedPendingDurableRequest(t, 'explicit-live-owner');
+      pending.makeOwnerAvailable();
+
+      assert.deepEqual(
+        await pending.transport.recoverOutcomeUnknown({
+          providerSessionId: pending.request.providerSessionId,
+          authorizedByComputerSessionId: 'computer-live-owner',
+          acknowledgePossibleDuplicateProviderWork: true,
+        }),
+        { ok: true, disposition: 'owner_active' },
+      );
+      assert.deepEqual(
+        await pending.transport.activeOutputRefs(pending.stateRoot),
+        {
+          ok: true,
+          refs: new Set([pending.outputRef]),
+        },
+      );
+    },
+  );
+
+  await t.test(
+    'a restarted daemon discovers the exact coordinate, audits abandonment, and releases it',
+    async () => {
+      const pending = await seedPendingDurableRequest(t, 'explicit-abandon');
+      const restartedTransport = createHostRoutedResponsesRequestTransport({
+        stateRoot: pending.stateRoot,
+        workerCommand: pending.workerCommand,
+        startProcess: async () => ({
+          ok: false,
+          message: 'start must not run during recovery',
+        }),
+        attachProcess: async () => ({
+          ok: false,
+          message: 'the original owner is gone',
+        }),
+        resolveTerminalArtifactPath: () => pending.terminalPath,
+      });
+
+      assert.deepEqual(
+        await restartedTransport.recoverOutcomeUnknown({
+          providerSessionId: pending.request.providerSessionId,
+          authorizedByComputerSessionId: 'computer-explicit-abandon',
+          acknowledgePossibleDuplicateProviderWork: true,
+        }),
+        { ok: true, disposition: 'abandoned' },
+      );
+      assert.deepEqual(
+        await restartedTransport.activeOutputRefs(pending.stateRoot),
+        {
+          ok: true,
+          refs: new Set(),
+        },
+      );
+
+      const abandonmentRoot = join(
+        pending.stateRoot,
+        '.geulbat',
+        'provider-request-abandonments',
+      );
+      const auditEntries = await readdir(abandonmentRoot);
+      assert.equal(auditEntries.length, 1);
+      const auditEntry = auditEntries[0];
+      assert.ok(auditEntry);
+      const audit = JSON.parse(
+        await readFile(join(abandonmentRoot, auditEntry), 'utf8'),
+      ) as Record<string, unknown>;
+      assert.equal(audit['action'], 'abandon_provider_request_outcome_unknown');
+      assert.equal(audit['requestIdentity'], pending.requestIdentity);
+      assert.equal(audit['outputRef'], pending.outputRef);
+      assert.equal(audit['acknowledgePossibleDuplicateProviderWork'], true);
+      assert.notEqual(
+        audit['providerSessionIdentityHash'],
+        pending.request.providerSessionId,
+      );
+      assert.notEqual(
+        audit['actorComputerSessionIdentityHash'],
+        'computer-explicit-abandon',
+      );
+    },
+  );
+
+  await t.test(
     'commit failure replays a terminal artifact won by the host',
     async () => {
       const stateRoot = await mkdtemp(
@@ -856,6 +981,10 @@ void test('durable request transport refuses live terminal frames without their 
     );
     let output = '';
     let stopped = 0;
+    let resolveExit: () => void = () => undefined;
+    const exit = new Promise<void>((resolve) => {
+      resolveExit = resolve;
+    });
     const transport = createHostRoutedResponsesRequestTransport({
       stateRoot,
       workerCommand,
@@ -863,7 +992,7 @@ void test('durable request transport refuses live terminal frames without their 
         ok: true,
         handle: {
           outputRef: 'provider-live-frame-output',
-          exit: new Promise(() => {}),
+          exit,
           drainNewOutput() {
             const drained = output;
             output = '';
@@ -894,6 +1023,7 @@ void test('durable request transport refuses live terminal frames without their 
           },
           stop() {
             stopped += 1;
+            resolveExit();
           },
         },
       }),
@@ -930,6 +1060,19 @@ async function seedPendingDurableRequest(
   const outputRef = `provider-pending-${suffix}`;
   const terminalPath = join(stateRoot, `${outputRef}.terminal.json`);
   let requestIdentity = '';
+  let ownerAvailable = false;
+  const ownerHandle = {
+    outputRef,
+    exit: new Promise(() => {}),
+    drainNewOutput: () => ({ stdout: '', stderr: '' }),
+    getOutputRevision: () => 0,
+    waitForOutputChange: async () => 1,
+    writeInput: async () => ({
+      ok: false as const,
+      message: 'seed pending coordinate',
+    }),
+    stop() {},
+  };
   const request: ResponsesDurableRequestStreamArgs = {
     webSocketUrl: 'wss://provider.example/responses',
     headers: new Headers({ Authorization: 'Bearer private-pending-token' }),
@@ -944,24 +1087,13 @@ async function seedPendingDurableRequest(
       requestIdentity = start.callId;
       return {
         ok: true,
-        handle: {
-          outputRef,
-          exit: new Promise(() => {}),
-          drainNewOutput: () => ({ stdout: '', stderr: '' }),
-          getOutputRevision: () => 0,
-          waitForOutputChange: async () => 1,
-          writeInput: async () => ({
-            ok: false,
-            message: 'seed pending coordinate',
-          }),
-          stop() {},
-        },
+        handle: ownerHandle,
       };
     },
-    attachProcess: async () => ({
-      ok: false,
-      message: 'attach must not run',
-    }),
+    attachProcess: async () =>
+      ownerAvailable
+        ? { ok: true, handle: ownerHandle }
+        : { ok: false, message: 'attach must not run' },
     resolveTerminalArtifactPath: () => terminalPath,
   });
   await assert.rejects(
@@ -974,6 +1106,11 @@ async function seedPendingDurableRequest(
     workerCommand,
     request,
     requestIdentity,
+    outputRef,
     terminalPath,
+    transport,
+    makeOwnerAvailable() {
+      ownerAvailable = true;
+    },
   };
 }

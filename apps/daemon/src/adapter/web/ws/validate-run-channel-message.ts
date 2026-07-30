@@ -10,6 +10,7 @@ import {
   isRunInterjectCancelEnvelope,
   isRunInterjectEnvelope,
   isRunInterjectFlushEnvelope,
+  isRunProviderRequestRecoveryMessage,
   isRunStartMessage,
   isRunThreadSubscribeMessage,
   isRunToolEnvelope,
@@ -35,6 +36,9 @@ export function readRunChannelClientMessage(
     return readClientMessageWithRequestId(value);
   }
   if (isRunApproveMessage(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isRunProviderRequestRecoveryMessage(value)) {
     return readClientMessageWithRequestId(value);
   }
   if (isPlanWorkflowCommandMessage(value)) {

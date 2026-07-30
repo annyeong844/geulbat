@@ -36,7 +36,7 @@ void test('tool args에서 위젯 뷰를 읽는다', () => {
   });
   assert.deepEqual(
     readVisualizeWidgetViewFromToolArgs({
-      code: '<p>plan</p>',
+      code: '<p data-plan-step-id="inspect">plan</p>',
       planStamp: {
         workflowId: 'workflow-stamped',
         planId: 'plan-stamped',
@@ -44,13 +44,20 @@ void test('tool args에서 위젯 뷰를 읽는다', () => {
         digest:
           'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       },
-    })?.planStamp,
+      planStepIds: ['inspect'],
+    }),
     {
-      workflowId: 'workflow-stamped',
-      planId: 'plan-stamped',
-      revision: 3,
-      digest:
-        'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      mode: 'html',
+      code: '<p data-plan-step-id="inspect">plan</p>',
+      title: null,
+      planStamp: {
+        workflowId: 'workflow-stamped',
+        planId: 'plan-stamped',
+        revision: 3,
+        digest:
+          'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+      planStepIds: ['inspect'],
     },
   );
 });
@@ -58,6 +65,13 @@ void test('tool args에서 위젯 뷰를 읽는다', () => {
 void test('빈 코드나 비정형 args는 거부한다', () => {
   assert.equal(readVisualizeWidgetViewFromToolArgs({ code: '   ' }), null);
   assert.equal(readVisualizeWidgetViewFromToolArgs({ code: 7 }), null);
+  assert.equal(
+    readVisualizeWidgetViewFromToolArgs({
+      code: '<p>x</p>',
+      planStepIds: ['same', 'same'],
+    }),
+    null,
+  );
   assert.equal(readVisualizeWidgetViewFromToolArgs('not-a-record'), null);
   assert.equal(readVisualizeWidgetViewFromToolArgs(null), null);
 });

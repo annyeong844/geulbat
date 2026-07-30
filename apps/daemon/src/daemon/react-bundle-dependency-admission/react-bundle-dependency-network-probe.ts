@@ -9,6 +9,7 @@ import {
   REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID,
   REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
   REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION,
+  createPublicHttpReadMetadataProbeTransport,
   probeHttpMetadata,
   type HttpMetadataProbeRequestTransport,
   type HttpMetadataProbeResult,
@@ -194,6 +195,9 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
   timeoutMs?: number;
   now?: () => string;
   signal?: AbortSignal;
+  publicHttpRead?: Parameters<
+    typeof createPublicHttpReadMetadataProbeTransport
+  >[0];
   probeTransport?: HttpMetadataProbeRequestTransport;
   processRunner?: NetworkProbeProcessRunner;
   backend?: ReactBundleDependencyMetadataProbeBackend;
@@ -202,6 +206,11 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
   const request = validateReactBundleDependencyPrepareRequest(args.request);
   const backend = normalizeMetadataProbeBackend(args.backend);
   const backendSummary = summarizeMetadataProbeBackend(backend);
+  const probeTransport =
+    args.probeTransport ??
+    (args.publicHttpRead === undefined
+      ? undefined
+      : createPublicHttpReadMetadataProbeTransport(args.publicHttpRead));
 
   return await runReactBundleDependencyAttempt({
     workspaceRoot: args.workspaceRoot,
@@ -228,7 +237,7 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
           ? { timeoutMs: args.timeoutMs, timeoutStartedAtMs: Date.now() }
           : {}),
         ...(args.signal ? { signal: args.signal } : {}),
-        ...(args.probeTransport ? { probeTransport: args.probeTransport } : {}),
+        ...(probeTransport ? { probeTransport } : {}),
         ...(args.processRunner ? { processRunner: args.processRunner } : {}),
         ...(args.dockerCommandRunner
           ? { dockerCommandRunner: args.dockerCommandRunner }

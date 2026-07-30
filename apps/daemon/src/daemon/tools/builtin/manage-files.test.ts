@@ -200,7 +200,11 @@ void test('manage_files delete removes the symlink entry without deleting its ta
 
   const result = await manageFilesTool.execute(
     { operation: 'delete', path: 'linked-dir' },
-    { callId: 'call-1', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-1',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -226,7 +230,11 @@ void test('manage_files move relocates the symlink entry without moving its targ
       path: 'source-link.txt',
       destination: 'moved-link.txt',
     },
-    { callId: 'call-move-symlink', computerFileRoot },
+    {
+      callId: 'call-move-symlink',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -241,7 +249,11 @@ void test('manage_files delete reports missing source through delete preconditio
 
   const result = await manageFilesTool.execute(
     { operation: 'delete', path: 'missing.txt' },
-    { callId: 'call-delete-missing', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-delete-missing',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -262,7 +274,11 @@ void test('manage_files create writes through a symlinked parent directory', asy
 
   const result = await manageFilesTool.execute(
     { operation: 'create', path: 'linked-dir/child.txt' },
-    { callId: 'call-create-symlink', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-create-symlink',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -275,7 +291,11 @@ void test('manage_files create returns already_exists when target file already e
 
   const result = await manageFilesTool.execute(
     { operation: 'create', path: 'hello.txt' },
-    { callId: 'call-2', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-2',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -287,7 +307,11 @@ void test('manage_files create creates an empty file through the shared save cha
 
   const result = await manageFilesTool.execute(
     { operation: 'create', path: 'empty.txt' },
-    { callId: 'call-create-empty', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-create-empty',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -369,7 +393,11 @@ void test('manage_files delete removes an existing file through the shared delet
 
   const result = await manageFilesTool.execute(
     { operation: 'delete', path: 'delete-me.txt' },
-    { callId: 'call-delete-file', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-delete-file',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -384,7 +412,11 @@ void test('manage_files mkdir creates nested directories through the shared mkdi
 
   const result = await manageFilesTool.execute(
     { operation: 'mkdir', path: 'nested/child' },
-    { callId: 'call-mkdir', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-mkdir',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -398,7 +430,11 @@ void test('manage_files mkdir returns already_exists when target is a file', asy
 
   const result = await manageFilesTool.execute(
     { operation: 'mkdir', path: 'not-a-directory' },
-    { callId: 'call-mkdir-file-conflict', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-mkdir-file-conflict',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -412,7 +448,11 @@ void test('manage_files rename returns already_exists when destination exists', 
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt', destination: 'to.txt' },
-    { callId: 'call-3', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-3',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -425,7 +465,11 @@ void test('manage_files rename rejects same canonical source and destination', a
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt', destination: './from.txt' },
-    { callId: 'call-rename-same-target', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-rename-same-target',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -442,7 +486,11 @@ void test('manage_files rename rejects moving a directory into its own descendan
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'src', destination: 'src/child' },
-    { callId: 'call-rename-descendant', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-rename-descendant',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -465,7 +513,11 @@ void test('manage_files rename reports path-kind conflict when file destination 
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'src', destination: 'src/child' },
-    { callId: 'call-rename-file-child', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-rename-file-child',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -487,7 +539,11 @@ void test('manage_files move returns already_exists when destination exists', as
 
   const result = await manageFilesTool.execute(
     { operation: 'move', path: 'src/note.txt', destination: 'dst/note.txt' },
-    { callId: 'call-4', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-4',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -500,7 +556,11 @@ void test('manage_files rename moves a file when the destination is free', async
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt', destination: 'to.txt' },
-    { callId: 'call-5', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-5',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -522,7 +582,11 @@ void test('manage_files move relocates a file into a new directory when destinat
 
   const result = await manageFilesTool.execute(
     { operation: 'move', path: 'src/note.txt', destination: 'dst/note.txt' },
-    { callId: 'call-6', computerFileRoot: computerFileRoot },
+    {
+      callId: 'call-6',
+      computerFileRoot: computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -539,6 +603,7 @@ void test('manage_files creates, moves, and deletes within the explicit computer
   const context = {
     callId: 'call-computer-manage',
     computerFileRoot,
+    workingDirectory: '',
   };
 
   const created = await manageFilesTool.execute(

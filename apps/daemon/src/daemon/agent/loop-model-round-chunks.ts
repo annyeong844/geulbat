@@ -49,6 +49,7 @@ interface ModelRoundChunkStreamError {
   category: StreamErrorCategory;
   error: unknown;
   message?: string;
+  retryAfterMs?: number;
   sawSemanticChunk: boolean;
 }
 
@@ -57,6 +58,7 @@ interface ModelRoundChunkThrownError {
   category: StreamErrorCategory;
   error: unknown;
   message?: string;
+  retryAfterMs?: number;
   sawSemanticChunk: boolean;
 }
 
@@ -109,7 +111,7 @@ export async function consumeModelRoundChunks(args: {
   emit: AgentEventEmitter;
   attemptIndex: number;
   now: () => number;
-  onProviderEventObserved?: (observedAtMs: number) => void;
+  onProviderEventObserved?: (observedAtMs: number) => void | Promise<void>;
   round?: number;
   // 인자 스트리밍 opt-in 도구 목록 (ToolMeta.streamsArgsDelta) — 목록에
   // 없는 도구의 델타는 버린다 (전송 낭비 방지)
@@ -162,7 +164,7 @@ export async function consumeModelRoundChunks(args: {
       }
 
       const chunkReceivedAtMs = now();
-      args.onProviderEventObserved?.(chunkReceivedAtMs);
+      await args.onProviderEventObserved?.(chunkReceivedAtMs);
 
       switch (chunk.type) {
         case 'text_delta': {
@@ -222,6 +224,9 @@ export async function consumeModelRoundChunks(args: {
             category: classifyStreamError(chunk),
             error: chunk,
             ...(chunk.message !== undefined ? { message: chunk.message } : {}),
+            ...(chunk.retryAfterMs === undefined
+              ? {}
+              : { retryAfterMs: chunk.retryAfterMs }),
             sawSemanticChunk,
           };
       }

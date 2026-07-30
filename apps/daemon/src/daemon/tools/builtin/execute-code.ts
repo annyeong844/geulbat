@@ -120,6 +120,12 @@ export const executeCodeTool = defineZodTool({
     if (!ctx.threadId || !ctx.stateRoot) {
       return toolError('execution_failed', 'run context is required for exec.');
     }
+    if (ctx.workingDirectory === undefined) {
+      return toolError(
+        'execution_failed',
+        'Select a working folder before using exec.',
+      );
+    }
     const services: ExecuteCodeToolServices | undefined = ctx.runtimeServices;
     const runtime = services?.ptc.executeCode;
     if (!runtime) {
@@ -184,7 +190,7 @@ export const executeCodeTool = defineZodTool({
         ...createRunContext({
           threadId: ctx.threadId,
           stateRoot: ctx.stateRoot,
-          workingDirectory: ctx.workingDirectory ?? '',
+          workingDirectory: ctx.workingDirectory,
         }),
         ownerKind,
       },

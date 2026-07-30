@@ -16,6 +16,22 @@ permissions:
   contents: read
 
 jobs:
+  public-export-safety:
+    name: Public export credential and private-material scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Scan the exact public export surface
+        run: npm run export:public-ci-mirror -- --output "${RUNNER_TEMP}/geulbat-public-export-scan"
+
   codeql:
     name: CodeQL (public mirror)
     if: ${{ github.event.repository.private == false }}

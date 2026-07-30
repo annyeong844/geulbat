@@ -6,7 +6,7 @@ import {
 export interface RunContext {
   threadId: ThreadId;
   stateRoot: string;
-  workingDirectory: string;
+  workingDirectory?: string;
 }
 
 export function createRunContext(context: {
@@ -21,6 +21,8 @@ export function createRunContext(context: {
   return {
     threadId: assertValidThreadId(context.threadId),
     stateRoot: context.stateRoot,
-    workingDirectory: context.workingDirectory ?? '',
+    ...(context.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: context.workingDirectory }),
   };
 }

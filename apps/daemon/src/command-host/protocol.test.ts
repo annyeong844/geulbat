@@ -19,6 +19,7 @@ import {
   startResultSchema,
   startParamsSchema,
   subscribeResultSchema,
+  waitInitialParamsSchema,
   waitInitialResultSchema,
 } from './protocol.js';
 
@@ -118,6 +119,52 @@ void test('method param schemas validate required shapes', () => {
   assert.equal(
     startParamsSchema.safeParse({
       executable: '/bin/sh',
+      args: ['-c', 'cat'],
+      cwd: '/tmp',
+      env: { PATH: '/usr/bin' },
+      stateRoot: '/state',
+      threadId: 't',
+      runId: 'r',
+      callId: 'c',
+      stdinMode: 'closed',
+      initialStdinBase64: Buffer.from([0x00, 0xff]).toString('base64'),
+    }).success,
+    true,
+  );
+  assert.equal(
+    startParamsSchema.safeParse({
+      executable: '/bin/sh',
+      args: ['-c', 'cat'],
+      cwd: '/tmp',
+      env: { PATH: '/usr/bin' },
+      stateRoot: '/state',
+      threadId: 't',
+      runId: 'r',
+      callId: 'c',
+      stdinMode: 'closed',
+      initialStdin: 'text',
+      initialStdinBase64: 'dGV4dA==',
+    }).success,
+    false,
+  );
+  assert.equal(
+    startParamsSchema.safeParse({
+      executable: '/bin/sh',
+      args: ['-c', 'cat'],
+      cwd: '/tmp',
+      env: { PATH: '/usr/bin' },
+      stateRoot: '/state',
+      threadId: 't',
+      runId: 'r',
+      callId: 'c',
+      stdinMode: 'closed',
+      initialStdinBase64: 'not base64',
+    }).success,
+    false,
+  );
+  assert.equal(
+    startParamsSchema.safeParse({
+      executable: '/bin/sh',
       args: ['-c', 'echo hi'],
       cwd: '/tmp',
       env: { PATH: '/usr/bin' },
@@ -142,6 +189,7 @@ void test('method param schemas validate required shapes', () => {
         stream: 'stdout',
         offsetBytes: 3,
         limitBytes: 3,
+        encoding: 'base64',
         deferRelease: true,
         releaseUpToBytes: 3,
       },
@@ -154,6 +202,20 @@ void test('method param schemas validate required shapes', () => {
       threadId: 't',
       outputRef: 'command-output:t/s',
       page: { stream: 'stdout', offsetBytes: 0, limitBytes: 0 },
+    }).success,
+    false,
+  );
+  assert.equal(
+    interactParamsSchema.safeParse({
+      stateRoot: '/s',
+      threadId: 't',
+      outputRef: 'command-output:t/s',
+      page: {
+        stream: 'stdout',
+        offsetBytes: 0,
+        limitBytes: 3,
+        encoding: 'hex',
+      },
     }).success,
     false,
   );
@@ -179,6 +241,8 @@ void test('initialize result defaults omitted known capabilities to disabled', (
     initialStdinOnStart: false,
     losslessStdio: true,
     prePersistenceOutputRedaction: false,
+    rawInitialStdinOnStart: false,
+    rawOutputPages: false,
   });
 });
 
@@ -194,6 +258,23 @@ void test('initialize result accepts the protocol-owned capability set', () => {
   });
 
   assert.deepEqual(parsed.capabilities, COMMAND_HOST_CAPABILITIES);
+});
+
+void test('waitInitial accepts only the explicit output-ref claim flag', () => {
+  assert.equal(
+    waitInitialParamsSchema.safeParse({
+      outputRef: 'command-output:t/s',
+      requiresOutputRef: true,
+    }).success,
+    true,
+  );
+  assert.equal(
+    waitInitialParamsSchema.safeParse({
+      outputRef: 'command-output:t/s',
+      requiresOutputRef: false,
+    }).success,
+    false,
+  );
 });
 
 void test('session result schemas reject malformed worker payloads', () => {
@@ -244,6 +325,26 @@ void test('session result schemas reject malformed worker payloads', () => {
     interactResultSchema.safeParse({
       ok: true,
       value: { snapshot, page: null },
+    }).success,
+    true,
+  );
+  assert.equal(
+    interactResultSchema.safeParse({
+      ok: true,
+      value: {
+        snapshot,
+        page: {
+          stream: 'stdout',
+          offsetBytes: 0,
+          endOffsetBytes: 3,
+          totalBytes: 3,
+          limitBytes: 3,
+          hasMore: false,
+          nextOffsetBytes: null,
+          content: 'AP8B',
+          contentEncoding: 'base64',
+        },
+      },
     }).success,
     true,
   );

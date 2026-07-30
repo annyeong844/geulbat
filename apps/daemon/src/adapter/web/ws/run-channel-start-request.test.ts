@@ -188,7 +188,7 @@ void test('readRunStartRequest canonicalizes the computer root to the empty port
   assert.equal(result.value.workingDirectory, '');
 });
 
-void test('readRunStartRequest defaults working directory to the computer browse start path', async (t) => {
+void test('readRunStartRequest preserves an omitted working directory', async (t) => {
   const args = await createArgs(t);
   const result = await readRunStartRequest(
     { prompt: 'hello', modelId: 'grok-4.5' },
@@ -197,10 +197,7 @@ void test('readRunStartRequest defaults working directory to the computer browse
 
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(
-    result.value.workingDirectory,
-    args.computerFileScope.browseStartPath,
-  );
+  assert.equal(result.value.workingDirectory, undefined);
   assert.equal(result.value.modelId, 'grok-4.5');
 });
 

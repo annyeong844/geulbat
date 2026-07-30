@@ -272,7 +272,9 @@ function buildRunDraft(args: {
   return {
     threadId: sourceAuthority.threadId,
     displayPrompt,
-    workingDirectory: sourceAuthority.workingDirectory,
+    ...(sourceAuthority.workingDirectory === ''
+      ? {}
+      : { workingDirectory: sourceAuthority.workingDirectory }),
     allowedPublicToolNames: [...FILE_MUTATION_ALLOWED_TOOLS],
     prompt: buildPromptText(promptLines),
     ...(sourceFilePath !== null

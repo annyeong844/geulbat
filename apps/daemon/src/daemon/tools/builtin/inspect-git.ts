@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { resolveSourceDirectoryTarget } from '../../files/file-platform.js';
+import {
+  buildGitInspectionEnvironment,
+  GIT_INSPECTION_GLOBAL_ARGUMENTS,
+} from '../../git-inspection-command.js';
 import type { HostCommandSnapshot } from '../../host-command-output-store.js';
 import { runHostRoutedSystemCommand } from '../../host-routed-command.js';
 import { resolveComputerFileToolPath } from '../file-tool-root.js';
@@ -148,13 +152,7 @@ export const inspectGitTool = defineZodTool({
           executable: 'git',
           args: buildInspectGitArguments(args),
           cwd,
-          env: {
-            ...process.env,
-            GIT_OPTIONAL_LOCKS: '0',
-            GIT_PAGER: 'cat',
-            GIT_TERMINAL_PROMPT: '0',
-            PAGER: 'cat',
-          },
+          env: buildGitInspectionEnvironment(),
           ...(args.timeoutMs === undefined
             ? {}
             : { timeoutMs: args.timeoutMs }),
@@ -222,12 +220,7 @@ export function buildInspectGitArguments(args: {
   staged?: boolean | undefined;
   maxEntries?: number | undefined;
 }): string[] {
-  const globalArgs = [
-    '--no-optional-locks',
-    '--literal-pathspecs',
-    '-c',
-    'color.ui=false',
-  ];
+  const globalArgs = [...GIT_INSPECTION_GLOBAL_ARGUMENTS];
   const pathArgs =
     args.paths === undefined ? [] : ['--', ...args.paths.map(String)];
   switch (args.operation) {

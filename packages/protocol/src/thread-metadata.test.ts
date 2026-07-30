@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  isModelSettlementIdentity,
   isThreadMessageMetadata,
   isThreadMessagePhase,
   readActiveArtifactRefFromMetadata,
@@ -165,6 +166,7 @@ void test('thread message metadata accepts final-answer artifact refs', () => {
       revision: 2,
       digest: `sha256:${'b'.repeat(64)}`,
     },
+    modelSettlementIdentity: `sha256:${'c'.repeat(64)}`,
   };
 
   assert.equal(isThreadMessageMetadata(metadata), true);
@@ -176,6 +178,32 @@ void test('thread message metadata accepts final-answer artifact refs', () => {
     artifactId: 'art_1',
     version: 1,
   });
+});
+
+void test('final-answer settlement identity is exact and phase-scoped', () => {
+  const identity = `sha256:${'d'.repeat(64)}`;
+  assert.equal(isModelSettlementIdentity(identity), true);
+  assert.equal(
+    isThreadMessageMetadata({
+      phase: 'final_answer',
+      modelSettlementIdentity: identity,
+    }),
+    true,
+  );
+  assert.equal(
+    isThreadMessageMetadata({
+      phase: 'final_answer',
+      modelSettlementIdentity: `sha256:${'d'.repeat(63)}`,
+    }),
+    false,
+  );
+  assert.equal(
+    isThreadMessageMetadata({
+      phase: 'commentary',
+      modelSettlementIdentity: identity,
+    }),
+    false,
+  );
 });
 
 void test('thread message metadata keeps plan stamps on final answers only', () => {

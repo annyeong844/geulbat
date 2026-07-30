@@ -11,6 +11,8 @@ import { createDaemonContext } from '../../../context.js';
 import { callModelWithDependencies } from '../client.js';
 import { resolveProviderRequestOptions } from '../provider-options.js';
 import { streamQwenChatCompletions } from './chat-completions-stream.js';
+import { summarizeQwenHistory } from './compaction.js';
+import { resolveQwenContextCapacityPolicy } from './config.js';
 
 const TEST_API_KEY = 'qwen-test-secret-credential-1234567890';
 
@@ -104,6 +106,71 @@ void test('replacement daemon resumes one command-host-owned Qwen HTTP SSE reque
   );
 });
 
+void test('replacement daemon replays one Qwen summary terminal without redispatch', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-qwen-summary-replacement-'),
+  );
+  const provider = await startQwenSseProvider();
+  const contexts: ReturnType<typeof createDaemonContext>[] = [];
+  t.after(async () => {
+    provider.release();
+    for (const context of contexts) {
+      await context.provider.webSocketSessions.closeAll();
+      await context.hostCommands.closeAll();
+    }
+    await provider.close();
+    await removeCommandHostWorkspace(stateRoot);
+    await rm(stateRoot, { recursive: true, force: true });
+  });
+
+  const first = createQwenRecoveryDaemonContext(stateRoot);
+  contexts.push(first);
+  const firstSummaryPromise = callQwenSummary(first, provider.origin);
+  provider.release();
+  const firstSummary = await firstSummaryPromise;
+  assert.equal(firstSummary.summary, 'hello world');
+  assert.equal(provider.dispatchCount(), 1);
+
+  await first.provider.webSocketSessions.closeAll();
+  await first.hostCommands.closeAll();
+
+  const replacement = createQwenRecoveryDaemonContext(stateRoot);
+  contexts.push(replacement);
+  const replacementSummary = await callQwenSummary(
+    replacement,
+    provider.origin,
+  );
+  assert.deepEqual(replacementSummary, firstSummary);
+  assert.equal(
+    provider.dispatchCount(),
+    1,
+    'replacement must replay the durable summary terminal instead of dispatching again',
+  );
+
+  const request = provider.requests()[0];
+  assert.equal(request?.authorization, `Bearer ${TEST_API_KEY}`);
+  const body = JSON.parse(request?.body ?? '{}') as {
+    model?: unknown;
+    stream?: unknown;
+    messages?: Array<{ role?: unknown; content?: unknown }>;
+  };
+  assert.equal(body.model, 'qwen3.8-max-preview');
+  assert.equal(body.stream, true);
+  assert.equal(body.messages?.[0]?.role, 'system');
+  assert.deepEqual(body.messages?.[1], {
+    role: 'user',
+    content: 'Preserve this completed work.',
+  });
+  const summaryRequest = body.messages?.at(-1);
+  assert.equal(summaryRequest?.role, 'user');
+  assert.equal(typeof summaryRequest?.content, 'string');
+  assert.match(String(summaryRequest?.content), /continuation summary/u);
+  assert.equal(
+    JSON.stringify(replacementSummary).includes(TEST_API_KEY),
+    false,
+  );
+});
+
 function createQwenRecoveryDaemonContext(stateRoot: string) {
   const previousComputerRoot = process.env.GEULBAT_COMPUTER_SESSION_ROOT;
   process.env.GEULBAT_COMPUTER_SESSION_ROOT = stateRoot;
@@ -158,6 +225,31 @@ function callQwen(
             credentialIdentity: 'qwen-test-credential-identity',
           },
         }),
+    },
+  );
+}
+
+function callQwenSummary(
+  context: ReturnType<typeof createDaemonContext>,
+  providerOrigin: string,
+) {
+  return summarizeQwenHistory(
+    {
+      historyPrefix: [{ kind: 'user', text: 'Preserve this completed work.' }],
+      model: 'qwen3.8-max-preview',
+      providerSessionId: 'qwen-summary-replacement-session',
+      providerRequestSessions: context.provider.webSocketSessions,
+    },
+    resolveQwenContextCapacityPolicy('qwen3.8-max-preview'),
+    {
+      loadConfig: async () => ({
+        model: 'qwen3.8-max-preview',
+        baseUrl: `${providerOrigin}/compatible-mode/v1`,
+        chatCompletionsUrl: `${providerOrigin}/compatible-mode/v1/chat/completions`,
+        apiKey: TEST_API_KEY,
+        credentialIdentity: 'qwen-test-credential-identity',
+      }),
+      streamChatCompletions: streamQwenChatCompletions,
     },
   );
 }

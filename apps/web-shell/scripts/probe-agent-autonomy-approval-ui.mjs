@@ -123,9 +123,13 @@ export function createApprovalUiFrameObserver(options) {
         recordViolation('multiple_run_start_frames');
         return;
       }
+      const promptMatched =
+        message.request?.prompt === options.expectedPrompt ||
+        options.matchesExpectedPromptReference?.(message.request?.promptRef) ===
+          true;
       if (
         !isRecord(message.request) ||
-        message.request.prompt !== options.expectedPrompt ||
+        !promptMatched ||
         message.request.modelId !== options.expectedModelId ||
         message.request.permissionMode !== 'basic' ||
         message.request.reasoningEffort !== options.expectedReasoningEffort ||
@@ -670,17 +674,68 @@ function failureCode(error) {
   return 'probe_failed';
 }
 
+export function parseComputerRootRelativeDirectoryPath(value) {
+  if (isAbsolute(value) || value.includes('\\')) {
+    throw new ApprovalUiProbeInputError(
+      '--working-directory must be computer-root-relative',
+    );
+  }
+  const segments = value.split('/');
+  if (
+    segments.length === 0 ||
+    segments.some(
+      (segment) => segment === '' || segment === '.' || segment === '..',
+    )
+  ) {
+    throw new ApprovalUiProbeInputError(
+      '--working-directory must contain canonical directory segments',
+    );
+  }
+  return Object.freeze(segments);
+}
+
+async function selectProbeWorkingDirectory(page, workingDirectory) {
+  const locationButton = page.locator('button.composer-context-bar');
+  await locationButton.waitFor({ state: 'visible' });
+  const expectedTitle = `시작 위치: ${workingDirectory}`;
+  if ((await locationButton.getAttribute('title')) === expectedTitle) {
+    return;
+  }
+
+  const segments = parseComputerRootRelativeDirectoryPath(workingDirectory);
+  await locationButton.click();
+  const picker = page.getByRole('dialog', {
+    name: '시작 위치 선택',
+    exact: true,
+  });
+  const directShortcut = picker.getByTitle(workingDirectory, { exact: true });
+  if (await directShortcut.isVisible()) {
+    await directShortcut.click();
+  } else {
+    await picker.getByTitle('컴퓨터', { exact: true }).click();
+    for (const segment of segments) {
+      await picker
+        .getByRole('button', {
+          name: `폴더 열기: ${segment}`,
+          exact: true,
+        })
+        .click();
+    }
+  }
+  await picker
+    .getByRole('button', { name: '이 폴더 사용', exact: true })
+    .click();
+  await page
+    .locator(
+      `button.composer-context-bar[title=${JSON.stringify(expectedTitle)}]`,
+    )
+    .waitFor({ state: 'visible' });
+}
+
 async function selectProbeUiState(page, options) {
   await page.getByRole('button', { name: '새 세션', exact: true }).click();
 
-  const locationButton = page.locator('button.composer-context-bar');
-  await locationButton.waitFor({ state: 'visible' });
-  const locationTitle = await locationButton.getAttribute('title');
-  if (locationTitle !== `시작 위치: ${options.workingDirectory}`) {
-    throw new Error(
-      `visible web-shell working directory mismatch: ${locationTitle ?? 'missing'}`,
-    );
-  }
+  await selectProbeWorkingDirectory(page, options.workingDirectory);
 
   const approvalButton = page.getByTitle('승인 방식', { exact: true });
   if (!(await approvalButton.textContent())?.includes('수동 승인')) {
@@ -709,51 +764,132 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
-export async function attachRunChannelCdpObserver({
-  context,
+export async function attachRunChannelPageObserver({
   now = () => new Date(),
   observer,
   page,
 }) {
-  const session = await context.newCDPSession(page);
-  const runChannelRequestIds = new Set();
+  const bindingName = '__geulbatR2ObserveRunChannelFrame';
   let observedSocketCount = 0;
-  session.on('Network.webSocketCreated', ({ requestId, url }) => {
-    if (new URL(url).pathname !== '/api/ws') {
-      return;
-    }
-    runChannelRequestIds.add(requestId);
-    observedSocketCount += 1;
-  });
-  session.on(
-    'Network.webSocketFrameSent',
-    ({ requestId, response: { payloadData } }) => {
+  const binding = await page.exposeBinding(
+    bindingName,
+    (source, observation) => {
       if (
-        runChannelRequestIds.has(requestId) &&
-        typeof payloadData === 'string'
+        source.frame !== page.mainFrame() ||
+        !isRecord(observation) ||
+        typeof observation.kind !== 'string'
       ) {
-        observer.observeSent(payloadData, now().toISOString());
+        return;
+      }
+      if (observation.kind === 'socket_created') {
+        observedSocketCount += 1;
+        return;
+      }
+      if (typeof observation.payload !== 'string') {
+        return;
+      }
+      const observedAt = now().toISOString();
+      if (observation.kind === 'frame_sent') {
+        observer.observeSent(observation.payload, observedAt);
+        return;
+      }
+      if (observation.kind === 'frame_received') {
+        observer.observeReceived(observation.payload, observedAt);
       }
     },
   );
-  session.on(
-    'Network.webSocketFrameReceived',
-    ({ requestId, response: { payloadData } }) => {
-      if (
-        runChannelRequestIds.has(requestId) &&
-        typeof payloadData === 'string'
-      ) {
-        observer.observeReceived(payloadData, now().toISOString());
+  const initScript = await page.addInitScript(
+    ({ bindingName }) => {
+      const NativeWebSocket = globalThis.WebSocket;
+      class ObservedRunChannelWebSocket extends NativeWebSocket {
+        constructor(url, protocols) {
+          super(...(protocols === undefined ? [url] : [url, protocols]));
+          let isRunChannel = false;
+          try {
+            isRunChannel =
+              new URL(String(url), globalThis.location.href).pathname ===
+              '/api/ws';
+          } catch {
+            // Native WebSocket owns invalid URL failures.
+          }
+          Object.defineProperty(this, '__geulbatR2RunChannel', {
+            value: isRunChannel,
+          });
+          if (!isRunChannel) {
+            return;
+          }
+          void globalThis[bindingName]({ kind: 'socket_created' });
+          this.addEventListener('message', (event) => {
+            if (typeof event.data === 'string') {
+              void globalThis[bindingName]({
+                kind: 'frame_received',
+                payload: event.data,
+              });
+            }
+          });
+        }
+
+        send(data) {
+          if (this.__geulbatR2RunChannel === true && typeof data === 'string') {
+            void globalThis[bindingName]({
+              kind: 'frame_sent',
+              payload: data,
+            });
+          }
+          return super.send(data);
+        }
       }
+      globalThis.WebSocket = ObservedRunChannelWebSocket;
     },
+    { bindingName },
   );
-  await session.send('Network.enable');
+
   return Object.freeze({
     observedSocketCount() {
       return observedSocketCount;
     },
     async close() {
-      await session.detach();
+      await Promise.allSettled(
+        [initScript, binding]
+          .map((disposable) => disposable?.dispose?.())
+          .filter((settlement) => settlement !== undefined),
+      );
+    },
+  });
+}
+
+export function attachPromptInputRequestObserver({
+  baseOrigin,
+  expectedPrompt,
+  page,
+}) {
+  let observedRequestCount = 0;
+  let matchedRequestCount = 0;
+  const observeRequest = (request) => {
+    const url = new URL(request.url());
+    if (
+      url.origin !== baseOrigin ||
+      url.pathname !== '/api/run/prompt-inputs'
+    ) {
+      return;
+    }
+    observedRequestCount += 1;
+    if (request.method() === 'POST' && request.postData() === expectedPrompt) {
+      matchedRequestCount += 1;
+    }
+  };
+  page.on('request', observeRequest);
+  return Object.freeze({
+    matchesExpectedPromptReference(promptRef) {
+      return (
+        typeof promptRef === 'string' &&
+        promptRef.length > 0 &&
+        observedRequestCount === 1 &&
+        matchedRequestCount === 1
+      );
+    },
+    close() {
+      page.removeListener('request', observeRequest);
     },
   });
 }
@@ -844,6 +980,9 @@ export async function runAgentAutonomyApprovalUiProbe(options = {}) {
     expectedPrompt: prompt,
     expectedReasoningEffort: parsed.reasoning_effort,
     expectedServiceTier: parsed.service_tier,
+    matchesExpectedPromptReference: (promptRef) =>
+      promptInputObservation?.matchesExpectedPromptReference(promptRef) ===
+      true,
     now,
     onApprovalRequired: () => {
       (options.log ?? console.log)(
@@ -856,6 +995,7 @@ export async function runAgentAutonomyApprovalUiProbe(options = {}) {
   });
   let browser;
   let page;
+  let promptInputObservation;
   let runChannelObservation;
 
   try {
@@ -869,13 +1009,12 @@ export async function runAgentAutonomyApprovalUiProbe(options = {}) {
     }
     page = await context.newPage();
     await page.addInitScript(
-      ({ modelId, reasoningEffort, serviceTier, workingDirectory }) => {
+      ({ modelId, reasoningEffort, serviceTier }) => {
         globalThis.localStorage.setItem(
           'geulbat.shell.run-session-preferences.v1',
           JSON.stringify({
             version: 1,
             preferences: {
-              workingDirectory,
               planModeRequested: false,
               planModeIntensity: 'visual',
               planModeDepth: 'standard',
@@ -891,11 +1030,14 @@ export async function runAgentAutonomyApprovalUiProbe(options = {}) {
         modelId: parsed.model_id,
         reasoningEffort: parsed.reasoning_effort,
         serviceTier: parsed.service_tier,
-        workingDirectory: parsed.working_directory,
       },
     );
-    runChannelObservation = await attachRunChannelCdpObserver({
-      context,
+    promptInputObservation = attachPromptInputRequestObserver({
+      baseOrigin: baseUrl.origin,
+      expectedPrompt: prompt,
+      page,
+    });
+    runChannelObservation = await attachRunChannelPageObserver({
       now,
       observer,
       page,
@@ -1034,6 +1176,7 @@ export async function runAgentAutonomyApprovalUiProbe(options = {}) {
     }
     throw error;
   } finally {
+    promptInputObservation?.close();
     await runChannelObservation?.close().catch(() => {});
     await Promise.allSettled(
       [page?.close(), browser?.close()].filter(

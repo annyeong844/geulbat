@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import {
   isApprovedPlanRef,
-  isSamePlanRenderingStamp,
+  isSameApprovedPlanRef,
   isPlanDraftV1,
   isPlanningWorkflowSnapshot,
   isPlanWorkflowCommand,
@@ -67,12 +67,93 @@ void test('planning workflow guards accept the closed canonical contract', () =>
   );
 });
 
-void test('plan rendering stamps compare every daemon-issued identity field', () => {
-  assert.equal(isSamePlanRenderingStamp(approvedRef, approvedRef), true);
+void test('approved plan references compare every daemon-issued identity field', () => {
+  assert.equal(isSameApprovedPlanRef(approvedRef, approvedRef), true);
   assert.equal(
-    isSamePlanRenderingStamp(approvedRef, {
+    isSameApprovedPlanRef(approvedRef, {
       ...approvedRef,
       revision: approvedRef.revision + 1,
+    }),
+    false,
+  );
+});
+
+void test('planning snapshot preserves the immediately superseded canonical revision', () => {
+  assert.equal(
+    isPlanningWorkflowSnapshot({
+      state: 'awaiting_approval',
+      threadId,
+      intensity: 'visual',
+      depth: 'deep',
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T00:00:02.000Z',
+      ...approvedRef,
+      revision: 2,
+      digest: `sha256:${'b'.repeat(64)}`,
+      supersededPlan: {
+        ...approvedRef,
+        draft,
+      },
+      draft: {
+        ...draft,
+        outcome: 'Ship enforced planning with revision comparison',
+      },
+      proposalRunId: 'run-2',
+    }),
+    true,
+  );
+  assert.equal(
+    isPlanningWorkflowSnapshot({
+      state: 'collecting',
+      threadId,
+      intensity: 'quiet',
+      depth: 'deep',
+      workflowId: approvedRef.workflowId,
+      planId: approvedRef.planId,
+      revision: approvedRef.revision,
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T00:00:02.000Z',
+      supersededPlan: {
+        ...approvedRef,
+        draft,
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isPlanningWorkflowSnapshot({
+      state: 'collecting',
+      threadId,
+      intensity: 'quiet',
+      depth: 'deep',
+      workflowId: approvedRef.workflowId,
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T00:00:02.000Z',
+      supersededPlan: {
+        ...approvedRef,
+        draft: { ...draft, steps: [] },
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isPlanningWorkflowSnapshot({
+      state: 'awaiting_approval',
+      threadId,
+      intensity: 'visual',
+      depth: 'deep',
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T00:00:02.000Z',
+      ...approvedRef,
+      revision: 2,
+      digest: `sha256:${'b'.repeat(64)}`,
+      supersededPlan: {
+        ...approvedRef,
+        workflowId: 'different-workflow',
+        draft,
+      },
+      draft,
+      proposalRunId: 'run-2',
     }),
     false,
   );

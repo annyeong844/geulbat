@@ -111,6 +111,7 @@ export function createRunSessionClientHarness(overrides?: {
   close?: () => void;
   getActiveRunForThread?: RunSessionControllerClient['getActiveRunForThread'];
   interject?: RunSessionControllerClient['interject'];
+  recoverProviderRequestOutcomeUnknown?: RunSessionControllerClient['recoverProviderRequestOutcomeUnknown'];
   subscribeThread?: RunSessionControllerClient['subscribeThread'];
 }): RunSessionClientHarness {
   let listener: ((message: RunChannelServerMessage) => void) | null = null;
@@ -194,6 +195,12 @@ export function createRunSessionClientHarness(overrides?: {
         commandKind: request.kind,
         snapshot: null,
       };
+    },
+    async recoverProviderRequestOutcomeUnknown(request) {
+      return (
+        (await overrides?.recoverProviderRequestOutcomeUnknown?.(request)) ??
+        'abandoned'
+      );
     },
     async subscribeThread(threadId) {
       threadSubscriptionCalls.push(threadId);

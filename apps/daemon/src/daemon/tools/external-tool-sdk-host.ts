@@ -157,9 +157,17 @@ async function closeDaemonToolSdkEmbeddingContext(
       settlement.status === 'rejected',
   );
   if (rejected !== undefined) {
-    throw rejected.reason;
+    throw rejected.reason instanceof Error
+      ? rejected.reason
+      : new Error('daemon Tool SDK host task rejected', {
+          cause: rejected.reason,
+        });
   }
   if (hostCommandFailure !== undefined) {
-    throw hostCommandFailure;
+    throw hostCommandFailure instanceof Error
+      ? hostCommandFailure
+      : new Error('daemon Tool SDK host command cleanup failed', {
+          cause: hostCommandFailure,
+        });
   }
 }

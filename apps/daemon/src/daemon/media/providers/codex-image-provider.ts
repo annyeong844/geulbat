@@ -1,7 +1,13 @@
+import { createHash } from 'node:crypto';
+
 import { CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY } from '../../llm/provider/client.js';
 import { buildResponsesRequestHeaders } from '../../llm/provider/codex-request.js';
 import { streamResponsesOverWebSocket } from '../../llm/provider/transport/responses-websocket.js';
 import type { ResponsesWebSocketSessionStore } from '../../llm/provider/transport/responses-websocket-cache.js';
+import {
+  resolveCodexResponsesUrl,
+  resolveCodexWebSocketUrl,
+} from '../../llm/provider/transport/responses-websocket-url.js';
 import { isRecord } from '../../runtime-json.js';
 import {
   ImageGenerationError,
@@ -74,8 +80,10 @@ interface CodexImageProviderInput {
   providerSessionId: string;
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
-    'acquireWebSocket'
+    'acquireWebSocket' | 'streamDurableResponseEvents'
   >;
+  requestAttempt?: number;
+  onDurableRequestPrepared?: (requestDigest: string) => Promise<void>;
   signal?: AbortSignal;
   streamResponses?: typeof streamResponsesOverWebSocket;
   now?: () => string;
@@ -192,6 +200,17 @@ export async function generateImageViaCodexResponses(
     model,
     providerSessionId: input.providerSessionId,
   });
+  const webSocketUrl = resolveCodexWebSocketUrl(resolveCodexResponsesUrl());
+  const requestDigest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        webSocketUrl,
+        serializedPayload: JSON.stringify(payload),
+        accountId: input.auth.accountId,
+      }),
+    )
+    .digest('hex');
+  await input.onDurableRequestPrepared?.(requestDigest);
   const headers = buildResponsesRequestHeaders({
     accessToken: input.auth.accessToken,
     accountId: input.auth.accountId,
@@ -207,6 +226,7 @@ export async function generateImageViaCodexResponses(
     headers,
     historyProjection: 'provider_output',
     providerSessionId: input.providerSessionId,
+    requestAttempt: input.requestAttempt ?? 0,
     webSocketReusePolicy: CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
     providerWebSocketSessions: input.providerWebSocketSessions,
     idleTimeoutMs: resolveCodexImageIdleTimeoutMs(),

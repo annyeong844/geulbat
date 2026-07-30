@@ -16,6 +16,7 @@ import type { RunExecutionAgentBindings } from '../sessions/run-execution-lifecy
 import { updatePlanTool } from '../tools/builtin/update-plan.js';
 import { makeRunContext } from '../../test-support/run-context.js';
 import { testRunId } from '../../test-support/run-id.js';
+import { TEST_CHILD_MODEL_REGISTRATION } from '../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import type { AgentEventEmitter } from './events.js';
 import type { AgentLoopCompletionGapObservation } from './observer/agent-loop-observer.js';
@@ -76,6 +77,7 @@ function createPolicy(args: {
       options.planningWorkflows ?? args.daemonContext.planningWorkflows,
     goals: options.goals ?? args.daemonContext.goals,
     backgroundNotifications: args.daemonContext.backgroundNotifications,
+    childRuns: args.daemonContext.childRuns,
     emit: options.emit ?? (() => {}),
     ...(options.runState === undefined ? {} : { runState: options.runState }),
     ...(options.planningWorkflow === undefined
@@ -183,6 +185,51 @@ void test('a pending terminal child update keeps the parent alive until it inspe
   );
 });
 
+void test('a retained terminal registry child keeps the parent alive when notification read fails', async () => {
+  const daemonContext = createDaemonContext();
+  const threadId = testThreadId(1202);
+  const childThreadId = testThreadId(1203);
+  const runId = testRunId('parent-with-retained-terminal-child');
+  const childRunId = testRunId('retained-terminal-child');
+  daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    parentRunId: runId,
+    ownerThreadId: threadId,
+    childRunId,
+    childThreadId,
+    subagentType: 'worker',
+  });
+  daemonContext.childRuns.markChildTerminal({
+    childRunId,
+    terminalState: 'failed',
+    result: 'child stopped before notification delivery recovered',
+    reason: 'child_error',
+  });
+  const originalRead =
+    daemonContext.backgroundNotifications.readThreadBackgroundResults;
+  daemonContext.backgroundNotifications.readThreadBackgroundResults = () => {
+    throw new Error('terminal notification read unavailable');
+  };
+
+  try {
+    const policy = createPolicy({ daemonContext, runId, threadId });
+    const pending = await policy.resolveTerminalCandidate({
+      source: 'natural',
+      result: candidateResult,
+    });
+
+    assert.equal(pending.kind, 'continue');
+    if (pending.kind === 'continue') {
+      assert.match(pending.historyText ?? '', /agent_wait/u);
+      assert.match(pending.historyText ?? '', new RegExp(childRunId, 'u'));
+      assert.match(pending.historyText ?? '', /child_registry/u);
+    }
+  } finally {
+    daemonContext.backgroundNotifications.readThreadBackgroundResults =
+      originalRead;
+  }
+});
+
 void test('pending interject admission precedes stale planning and Goal state', async () => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-run-completion-interject-'),
@@ -264,6 +311,10 @@ void test('collecting planning state rejects prose completion but admits a turn-
   assert.match(
     natural.kind === 'continue' ? (natural.historyText ?? '') : '',
     /"kind":"planning_workflow_incomplete"/u,
+  );
+  assert.match(
+    natural.kind === 'continue' ? (natural.historyText ?? '') : '',
+    /understanding_confirmation/u,
   );
 
   const toolCompletion = await policy.resolveTerminalCandidate({

@@ -45,3 +45,18 @@ export async function pathExists(path: string): Promise<boolean> {
     return false;
   }
 }
+
+export function containsStringValue(value: unknown, needle: string): boolean {
+  if (typeof value === 'string') {
+    return value.includes(needle);
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => containsStringValue(item, needle));
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value).some((item) =>
+      containsStringValue(item, needle),
+    );
+  }
+  return false;
+}

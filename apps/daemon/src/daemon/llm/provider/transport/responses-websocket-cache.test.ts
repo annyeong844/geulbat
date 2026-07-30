@@ -862,6 +862,11 @@ void test('responses session owner applies shared provider admission to durable 
       serializedPayload: '{"model":"test-model","stream":true}',
       providerSessionId: 'provider-session-http',
       requestAttempt: 0,
+      resolveProviderAdmissionFallbackDelayMs() {
+        assert.fail(
+          'factual Retry-After must win without consulting fallback policy',
+        );
+      },
     }) ?? []) {
       void event;
     }
@@ -876,6 +881,57 @@ void test('responses session owner applies shared provider admission to durable 
           scope.providerScope === 'https://api.example.test' &&
           scope.cooldownRemainingMs > 0,
       ),
+  );
+  await store.closeAll();
+});
+
+void test('durable HTTP admission uses the caller retry policy when Retry-After is absent', async () => {
+  const nowMs = 10_000;
+  const resolverErrors: unknown[] = [];
+  const store = createResponsesWebSocketSessionStore({
+    now: () => nowMs,
+    async connectWebSocket() {
+      throw new Error('direct socket path must not run');
+    },
+    durableRequestTransport: {
+      async *streamEvents(): AsyncIterable<Record<string, unknown>> {
+        throw new Error('responses websocket durable path must not run');
+      },
+      async *streamHttpSseEvents(): AsyncIterable<Record<string, unknown>> {
+        throw Object.assign(
+          new Error('HTTP provider rate limited without Retry-After'),
+          { status: 429 },
+        );
+      },
+    },
+  });
+  const streamDurableHttpSseEvents = store.streamDurableHttpSseEvents;
+  assert.notEqual(streamDurableHttpSseEvents, undefined);
+
+  await assert.rejects(async () => {
+    for await (const event of streamDurableHttpSseEvents?.({
+      requestUrl: 'https://api.example.test/v1/chat/completions',
+      headers: new Headers({ Authorization: 'Bearer private-token' }),
+      serializedPayload: '{"model":"test-model","stream":true}',
+      providerSessionId: 'provider-session-http-fallback',
+      requestAttempt: 0,
+      resolveProviderAdmissionFallbackDelayMs(error) {
+        resolverErrors.push(error);
+        return 1_750;
+      },
+    }) ?? []) {
+      void event;
+    }
+  }, /without Retry-After/u);
+
+  assert.equal(resolverErrors.length, 1);
+  assert.equal(
+    store
+      .readPressureSnapshot()
+      .scopes.find(
+        (scope) => scope.providerScope === 'https://api.example.test',
+      )?.cooldownRemainingMs,
+    1_750,
   );
   await store.closeAll();
 });

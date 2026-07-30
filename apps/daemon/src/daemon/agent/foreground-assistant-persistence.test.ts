@@ -22,6 +22,7 @@ import {
   readTranscriptEntries,
   replaceTranscriptEntries,
 } from '../sessions/transcript-log.js';
+import { createRunCheckpointStore } from '../sessions/run-checkpoint-store.js';
 import {
   loadThreadIndex,
   upsertThreadSummary,
@@ -361,4 +362,205 @@ void test('planning output persists the latest daemon-issued stamp on the final 
     -1,
   );
   assert.deepEqual(assistant?.metadata?.planStamp, expectedStamp);
+});
+
+void test('a settled assistant artifact and transcript re-enter exactly once after restart', async () => {
+  const threadId = testThreadId(1206);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-assistant-'));
+  const events: AgentEvent[] = [];
+  const runId = assertRunId('run-foreground-assistant');
+  const identity = `sha256:${'6'.repeat(64)}` as const;
+  const providerRequestIdentity = 'b'.repeat(64);
+  const candidateDigest = `sha256:${'7'.repeat(64)}` as const;
+  const runCheckpoints = createRunCheckpointStore({
+    stateRoot: workspaceRoot,
+    now: () => FIXED_NOW,
+  });
+  await runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { permissionMode: 'basic' },
+  });
+  assert.equal(
+    (
+      await runCheckpoints.recordModelRoundPrepared?.({
+        threadId,
+        runId,
+        active: {
+          round: 0,
+          claimId: 'settled-assistant-claim',
+          modelRoundAttempt: 0,
+          providerRequestAttempt: 0,
+          providerId: 'openai_codex_direct',
+          model: 'gpt-5.6-sol',
+          transportKind: 'websocket',
+          providerRequestIdentity,
+          contextDigest: `sha256:${'8'.repeat(64)}`,
+          toolLibraryProjectionIdentity: {
+            sdkVersion: 'sdk-settled-assistant-v1',
+            sdkProjectionHash: `sha256:${'9'.repeat(64)}`,
+            policyId: 'sha256:settled-assistant-policy',
+          },
+          responseFormat: null,
+          providerReplayScopeId: null,
+          logicalRequestIdentity: identity,
+        },
+      })
+    )?.ok,
+    true,
+  );
+  assert.equal(
+    (
+      await runCheckpoints.markModelRoundPhase?.({
+        threadId,
+        runId,
+        claimId: 'settled-assistant-claim',
+        providerRequestIdentity,
+        phase: 'terminal_observed',
+      })
+    )?.ok,
+    true,
+  );
+  assert.equal(
+    (
+      await runCheckpoints.recordModelRoundSettlementCandidate?.({
+        threadId,
+        runId,
+        claimId: 'settled-assistant-claim',
+        logicalRequestIdentity: identity,
+        providerRequestIdentity,
+        candidateDigest,
+        usage: {
+          inputTokens: 3,
+          outputTokens: 2,
+          cachedInputTokens: 1,
+        },
+      })
+    )?.ok,
+    true,
+  );
+  const result = {
+    ok: true,
+    finalProse: '',
+    artifactCandidate: {
+      renderer: 'markdown' as const,
+      payload: '# settled artifact',
+      digest: 'sha256:settled-artifact',
+    },
+    modelSettlementIdentity: identity,
+  };
+  assert.equal(
+    (
+      await runCheckpoints.commitModelRoundSettlement?.({
+        threadId,
+        runId,
+        claimId: 'settled-assistant-claim',
+        logicalRequestIdentity: identity,
+        candidateDigest,
+        resultDigest: `sha256:${'a'.repeat(64)}`,
+        result,
+        disposition: 'terminal',
+        source: 'natural',
+        continuationHistoryText: null,
+      })
+    )?.ok,
+    true,
+  );
+
+  const artifactId = `art_model_${identity.slice('sha256:'.length)}`;
+  await commitThreadArtifactVersion({
+    workspaceRoot,
+    threadId,
+    runId,
+    artifactId,
+    renderer: result.artifactCandidate.renderer,
+    payload: result.artifactCandidate.payload,
+    digest: result.artifactCandidate.digest,
+    sourceRef: {
+      kind: 'thread-file',
+      workingDirectory: '',
+      threadId,
+      runId,
+      filePath: 'episodes/ch01.md',
+      messageTimestamp: FIXED_NOW,
+    },
+    timestamp: FIXED_NOW,
+  });
+
+  const agentInput = makeAgentInput({ workspaceRoot, threadId, events });
+  agentInput.runtimeServices = {
+    ...createDaemonContext(),
+    runCheckpoints,
+  };
+  assert.equal(
+    await persistForegroundAssistantAnswer({
+      agentInput,
+      result,
+      deps: makeDeps(),
+    }),
+    true,
+  );
+  assert.equal(
+    await persistForegroundAssistantAnswer({
+      agentInput,
+      result,
+      deps: makeDeps(),
+    }),
+    true,
+  );
+  const diagnostics: string[] = [];
+  assert.equal(
+    await persistForegroundAssistantAnswer({
+      agentInput,
+      result: {
+        ...result,
+        finalProse: 'conflicting replay',
+      },
+      deps: makeDeps({
+        onPostRunPersistenceError: (phase) => diagnostics.push(phase),
+      }),
+    }),
+    false,
+  );
+  assert.equal(
+    await persistForegroundAssistantAnswer({
+      agentInput,
+      result: {
+        ...result,
+        artifactCandidate: {
+          ...result.artifactCandidate,
+          payload: '# conflicting settled artifact',
+        },
+      },
+      deps: makeDeps({
+        onPostRunPersistenceError: (phase) => diagnostics.push(phase),
+      }),
+    }),
+    false,
+  );
+  assert.deepEqual(diagnostics, [
+    'persist assistant transcript',
+    'persist assistant transcript',
+  ]);
+
+  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.equal(transcript.length, 1);
+  assert.equal(
+    transcript[0]?.entryId,
+    `model_settlement_${identity.slice('sha256:'.length)}`,
+  );
+  assert.equal(transcript[0]?.metadata?.modelSettlementIdentity, identity);
+  const versions = await loadAllThreadArtifactVersions(workspaceRoot, threadId);
+  assert.deepEqual(
+    versions.map((version) => [
+      version.artifactId,
+      version.version,
+      version.payload,
+    ]),
+    [[artifactId, 1, '# settled artifact']],
+  );
+  assert.equal(
+    events.filter((event) => event.type === 'artifact_committed').length,
+    1,
+  );
 });

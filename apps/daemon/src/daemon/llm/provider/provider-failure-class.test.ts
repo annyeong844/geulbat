@@ -73,6 +73,14 @@ void test('only the unknown class leaves its wire code to the observed error', (
   }
 });
 
+void test('outcome-unknown provider requests preserve their user-recoverable wire code without retrying', () => {
+  const failureClass = resolveProviderFailureClass(
+    'llm_provider_request_outcome_unknown',
+  );
+  assert.equal(failureClass.wireCode, 'llm_provider_request_outcome_unknown');
+  assert.equal(failureClass.retryBudget, null);
+});
+
 // 인증서 검증 실패는 결정적이므로 이 목록에 들어오면 안 된다. 들어오면 같은
 // handshake 실패를 재시도로 태우고 "timed out"이라는 틀린 진단이 나간다.
 void test('retry budgets are only claimed by classes a retry can resolve', () => {

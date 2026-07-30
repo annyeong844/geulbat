@@ -6,7 +6,9 @@ import {
   type ProviderStructuredOutput,
   type ProviderUsageTelemetry,
 } from '../llm/index.js';
+import { sha256StableJson } from '@geulbat/content-identity/stable-json';
 import { createLogger } from '@geulbat/structured-logger/logger';
+import type { DurableProviderRequestPreparedSnapshot } from '../llm/provider/transport/responses-durable-request.js';
 import type { ToolDefinition } from '../tools/types.js';
 import type { AgentEventEmitter, AgentEventPayloadMap } from './events.js';
 import {
@@ -17,7 +19,10 @@ import {
 import { isRecord } from '../runtime-json.js';
 import type { CallModelFn } from './loop-types.js';
 import type { AgentResult } from './agent-result.js';
-import type { StreamErrorCategory } from '../llm/provider/transport/stream-error.js';
+import {
+  classifyStreamError,
+  type StreamErrorCategory,
+} from '../llm/provider/transport/stream-error.js';
 import { composeAgentResult } from './agent-result.js';
 import { emitTerminalFailure, type StepResult } from './loop-shared.js';
 import { consumeModelRoundChunks } from './loop-model-round-chunks.js';
@@ -44,6 +49,11 @@ interface ModelRoundData {
   providerUsageTelemetry?: ProviderUsageTelemetry;
 }
 
+export interface ModelRoundDurableRequestPreparedSnapshot extends DurableProviderRequestPreparedSnapshot {
+  modelRoundAttempt: number;
+  contextDigest: `sha256:${string}`;
+}
+
 export interface RunModelRoundArgs {
   history: HistoryItem[];
   systemPrompt: string;
@@ -64,7 +74,16 @@ export interface RunModelRoundArgs {
   emit: AgentEventEmitter;
   callModelImpl?: CallModelFn;
   retrySleep?: (delayMs: number) => Promise<void>;
+  initialModelRoundAttempt?: number;
   onProviderRequestPrepared?: CallModelInput['onProviderRequestPrepared'];
+  resumeProviderRequestIdentity?: string;
+  onDurableProviderRequestPrepared?: (
+    snapshot: ModelRoundDurableRequestPreparedSnapshot,
+  ) => void | Promise<void>;
+  onDurableProviderPhase?: (snapshot: {
+    providerRequestIdentity: string;
+    phase: 'streaming' | 'terminal_observed';
+  }) => void | Promise<void>;
   onContextPreparationRequired?: () => Promise<
     { kind: 'prepared' } | { kind: 'failed'; message: string }
   >;
@@ -185,11 +204,14 @@ export async function runModelRound(
     callModelImpl,
     retrySleep = sleepForModelRoundRetry,
     onProviderRequestPrepared,
+    resumeProviderRequestIdentity,
+    onDurableProviderRequestPrepared,
+    onDurableProviderPhase,
     onContextPreparationRequired,
     onContextOverflow,
     now = Date.now,
   } = args;
-  let attemptIndex = 0;
+  let attemptIndex = args.initialModelRoundAttempt ?? 0;
   let providerAttemptCount = 0;
   let contextPreparationAttempted = false;
   let contextOverflowRecoveryAttempted = false;
@@ -199,6 +221,7 @@ export async function runModelRound(
   let currentProviderPhase: ProviderRuntimePhase = 'provider_waiting';
   let lastProviderEventAtMs: number | undefined;
   let retryDiagnostics: ProviderRetryDiagnostics | undefined;
+  let resumableProviderRequestIdentity = resumeProviderRequestIdentity;
 
   const buildProviderRequestDiagnostics = (
     observedAtMs: number,
@@ -235,6 +258,10 @@ export async function runModelRound(
     providerAttemptCount += 1;
     emitProviderRuntimeStatus('provider_waiting', now());
     let observedProviderEventForAttempt = false;
+    let activeProviderRequestIdentity: string | undefined;
+    let coordinatedProviderRetry:
+      | { category: StreamErrorCategory; delayMs: number }
+      | undefined;
     const input: CallModelInput = {
       history,
       systemPrompt,
@@ -250,8 +277,58 @@ export async function runModelRound(
       ...(onProviderRequestPrepared === undefined
         ? {}
         : { onProviderRequestPrepared }),
+      ...(resumableProviderRequestIdentity === undefined
+        ? {}
+        : {
+            resumeProviderRequestIdentity: resumableProviderRequestIdentity,
+          }),
+      ...(onDurableProviderRequestPrepared === undefined
+        ? {}
+        : {
+            async onDurableProviderRequestPrepared(snapshot) {
+              await onDurableProviderRequestPrepared({
+                ...snapshot,
+                modelRoundAttempt: attemptIndex,
+                contextDigest: createModelRoundContextDigest({
+                  history,
+                  systemPrompt,
+                  toolDefs,
+                  providerDeferredToolDefs,
+                  providerRequestOptions,
+                  providerReplayScopeId,
+                }),
+              });
+              activeProviderRequestIdentity = snapshot.requestIdentity;
+            },
+          }),
       onProviderRuntimeState(observation) {
         emitProviderRuntimeStatus(observation.state, now());
+      },
+      resolveProviderAdmissionFallbackDelayMs({ error, sawSemanticChunk }) {
+        const category = classifyStreamError(error);
+        if (category !== 'llm_rate_limited' && category !== 'llm_overloaded') {
+          return undefined;
+        }
+        if (sawSemanticChunk) {
+          return undefined;
+        }
+        if (coordinatedProviderRetry?.category === category) {
+          return coordinatedProviderRetry.delayMs;
+        }
+        const decision = decideModelRoundRetry({
+          category,
+          attemptIndex,
+          sawSemanticChunk,
+          policy: providerRequestOptions.modelRoundRetry,
+        });
+        if (decision.kind !== 'retry') {
+          return undefined;
+        }
+        coordinatedProviderRetry = {
+          category,
+          delayMs: decision.delayMs,
+        };
+        return decision.delayMs;
       },
     };
     // 소비만 멈추면 provider 요청은 계속 흐른다. 요청 자체를 끊어야 토큰도
@@ -274,10 +351,19 @@ export async function runModelRound(
       emit,
       attemptIndex,
       now,
-      onProviderEventObserved(observedAtMs) {
+      async onProviderEventObserved(observedAtMs) {
         lastProviderEventAtMs = observedAtMs;
         if (!observedProviderEventForAttempt) {
           observedProviderEventForAttempt = true;
+          if (
+            activeProviderRequestIdentity !== undefined &&
+            onDurableProviderPhase !== undefined
+          ) {
+            await onDurableProviderPhase({
+              providerRequestIdentity: activeProviderRequestIdentity,
+              phase: 'streaming',
+            });
+          }
           emitProviderRuntimeStatus('provider_streaming', observedAtMs);
         }
       },
@@ -286,14 +372,31 @@ export async function runModelRound(
         ? { streamArgsToolNames: args.streamArgsToolNames }
         : {}),
     });
+    resumableProviderRequestIdentity = undefined;
+    if (
+      activeProviderRequestIdentity !== undefined &&
+      onDurableProviderPhase !== undefined &&
+      // A steering interrupt is a locally requested, observed terminal
+      // outcome for this model round. The loop must durably settle and
+      // complete that round before it can apply the queued user message.
+      // A whole-run abort still belongs to terminal run settlement instead.
+      chunkResult.kind !== 'aborted'
+    ) {
+      await onDurableProviderPhase({
+        providerRequestIdentity: activeProviderRequestIdentity,
+        phase: 'terminal_observed',
+      });
+    }
 
     switch (chunkResult.kind) {
       case 'success': {
         if (attemptIndex > 0) {
+          const retryAfterMs = retryDiagnostics?.retryAfterMs;
           retryDiagnostics = {
             available: false,
             performed: true,
             outcome: 'recovered',
+            ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
           };
         }
         emitProviderRuntimeStatus(currentProviderPhase, now(), true);
@@ -327,7 +430,11 @@ export async function runModelRound(
               })
             : composeAgentResult({
                 ok: true,
-                finalProse: chunkResult.finalText || chunkResult.assistantText,
+                finalProse:
+                  chunkResult.finalText ||
+                  (chunkResult.functionCalls.length === 0
+                    ? chunkResult.assistantText
+                    : ''),
               });
         const structuredOutputs =
           chunkResult.structuredOutputs.length > 0
@@ -447,6 +554,13 @@ export async function runModelRound(
           ...(chunkResult.message !== undefined
             ? { message: chunkResult.message }
             : {}),
+          ...(chunkResult.retryAfterMs === undefined
+            ? {}
+            : { retryAfterMs: chunkResult.retryAfterMs }),
+          ...(coordinatedProviderRetry?.category !== chunkResult.category ||
+          chunkResult.sawSemanticChunk
+            ? {}
+            : { preparedRetryDelayMs: coordinatedProviderRetry.delayMs }),
           logTerminalFailure: true,
           onRetryDecision(diagnostics, terminal) {
             retryDiagnostics = diagnostics;
@@ -468,6 +582,31 @@ export async function runModelRound(
   }
 }
 
+function createModelRoundContextDigest(args: {
+  history: readonly HistoryItem[];
+  systemPrompt: string;
+  toolDefs: readonly ToolDefinition[];
+  providerDeferredToolDefs: readonly ToolDefinition[] | undefined;
+  providerRequestOptions: CallModelInput['providerRequestOptions'];
+  providerReplayScopeId: CallModelInput['providerReplayScopeId'];
+}): `sha256:${string}` {
+  return `sha256:${sha256StableJson({
+    history: args.history,
+    systemPrompt: args.systemPrompt,
+    tools: args.toolDefs,
+    deferredTools: args.providerDeferredToolDefs ?? null,
+    provider: {
+      providerId: args.providerRequestOptions.providerId,
+      model: args.providerRequestOptions.model,
+      serviceTier: args.providerRequestOptions.serviceTier ?? null,
+      text: args.providerRequestOptions.text,
+      reasoning: args.providerRequestOptions.reasoning,
+    },
+    responseFormat: null,
+    providerReplayScopeId: args.providerReplayScopeId ?? null,
+  })}`;
+}
+
 function resolveModelRoundFailure(args: {
   emit: AgentEventEmitter;
   category: StreamErrorCategory;
@@ -476,24 +615,32 @@ function resolveModelRoundFailure(args: {
   sawSemanticChunk: boolean;
   retryPolicy: CallModelInput['providerRequestOptions']['modelRoundRetry'];
   message?: string;
+  retryAfterMs?: number;
+  preparedRetryDelayMs?: number;
   logTerminalFailure?: boolean;
   onRetryDecision: (
     diagnostics: ProviderRetryDiagnostics,
     terminal: boolean,
   ) => void;
 }): ModelRoundFailureResolution {
-  const retryDecision = decideModelRoundRetry({
-    category: args.category,
-    attemptIndex: args.attemptIndex,
-    sawSemanticChunk: args.sawSemanticChunk,
-    policy: args.retryPolicy,
-  });
+  const retryDecision =
+    args.preparedRetryDelayMs === undefined
+      ? decideModelRoundRetry({
+          category: args.category,
+          attemptIndex: args.attemptIndex,
+          sawSemanticChunk: args.sawSemanticChunk,
+          policy: args.retryPolicy,
+        })
+      : { kind: 'retry' as const, delayMs: args.preparedRetryDelayMs };
   if (retryDecision.kind === 'retry') {
     args.onRetryDecision(
       {
         available: true,
         performed: true,
         outcome: 'scheduled',
+        ...(args.retryAfterMs === undefined
+          ? {}
+          : { retryAfterMs: args.retryAfterMs }),
       },
       false,
     );
@@ -505,6 +652,9 @@ function resolveModelRoundFailure(args: {
       available: false,
       performed: args.attemptIndex > 0,
       outcome: retryDecision.reason,
+      ...(args.retryAfterMs === undefined
+        ? {}
+        : { retryAfterMs: args.retryAfterMs }),
     },
     true,
   );

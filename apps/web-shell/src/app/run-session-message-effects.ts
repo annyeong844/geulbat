@@ -88,6 +88,7 @@ export type RunSessionMessageEffect =
     }
   | {
       kind: 'approval_requested';
+      runId: string;
       threadId: string;
       pendingApproval: ApprovalRequired;
     }
@@ -356,6 +357,7 @@ export function adaptRunSessionMessage(
     case 'approval_required':
       return {
         kind: 'approval_requested',
+        runId: event.runId,
         threadId: event.threadId,
         pendingApproval: event.payload,
       };
@@ -564,6 +566,7 @@ async function applyRunSessionMessageEffect({
     case 'approval_requested':
       dispatch({
         type: 'approval_requested',
+        runId: effect.runId,
         threadId: effect.threadId,
         pendingApproval: effect.pendingApproval,
       });

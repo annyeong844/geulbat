@@ -58,6 +58,11 @@ const RUN_FINAL_TEXT = `${RUN_STREAM_PREFIX}${RUN_FINAL_SUFFIX}`;
 const PLAN_STEER_PROMPT = 'flow-gate plan steer preservation proof';
 const PLAN_STEER_TEXT = 'flow-gate: keep the plan while steering';
 const PLAN_STEER_STEP = 'flow-gate plan remains visible';
+const PLAN_STEER_FINAL_TEXT = 'flow-gate: explicit steer flush settled';
+const PLAN_STEER_FOLLOWUP_PROMPT =
+  'flow-gate ordinary follow-up starts a new turn';
+const PLAN_STEER_FOLLOWUP_FINAL_TEXT =
+  'flow-gate: ordinary follow-up settled as a new turn';
 const APPROVAL_PROMPT = 'flow-gate approval write proof';
 const APPROVAL_CONTENT = 'flow-gate approved write\n';
 const APPROVAL_FINAL_TEXT = 'flow-gate: approved write settled';
@@ -249,8 +254,14 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
             GEULBAT_FLOW_GATE_APPROVAL_PROMPT: APPROVAL_PROMPT,
             GEULBAT_FLOW_GATE_APPROVAL_TARGET_PATH: approvalTargetPath,
             GEULBAT_FLOW_GATE_INITIAL_COMMENTARY: INITIAL_RECOVERY_COMMENTARY,
+            GEULBAT_FLOW_GATE_PLAN_STEER_FINAL_TEXT: PLAN_STEER_FINAL_TEXT,
+            GEULBAT_FLOW_GATE_PLAN_STEER_FOLLOWUP_FINAL_TEXT:
+              PLAN_STEER_FOLLOWUP_FINAL_TEXT,
+            GEULBAT_FLOW_GATE_PLAN_STEER_FOLLOWUP_PROMPT:
+              PLAN_STEER_FOLLOWUP_PROMPT,
             GEULBAT_FLOW_GATE_PLAN_STEER_PROMPT: PLAN_STEER_PROMPT,
             GEULBAT_FLOW_GATE_PLAN_STEER_STEP: PLAN_STEER_STEP,
+            GEULBAT_FLOW_GATE_PLAN_STEER_TEXT: PLAN_STEER_TEXT,
             GEULBAT_FLOW_GATE_RUN_FINAL_SUFFIX: RUN_FINAL_SUFFIX,
             GEULBAT_FLOW_GATE_RUN_SETTLEMENT_PROMPT: RUN_SETTLEMENT_PROMPT,
             GEULBAT_FLOW_GATE_RUN_STREAM_PREFIX: RUN_STREAM_PREFIX,
@@ -697,11 +708,7 @@ async function runStartAndSettlementFlow(page, harness) {
     .filter({ hasText: '수동 승인' })
     .waitFor({ state: 'visible', timeout: 8_000 });
   await page.getByRole('button', { name: '새 세션' }).click();
-  await waitForContextBarPath(
-    page,
-    harness.workspace.root,
-    'new-session setup',
-  );
+  await waitForContextBarPath(page, '작업 폴더 없음', 'new-session setup');
   await approvalMode
     .filter({ hasText: '수동 승인' })
     .waitFor({ state: 'visible', timeout: 8_000 });
@@ -734,11 +741,7 @@ async function runStartAndSettlementFlow(page, harness) {
   );
   const newSessionResetStartedAt = performance.now();
   await page.getByRole('button', { name: '새 세션' }).click();
-  await waitForContextBarPath(
-    page,
-    harness.workspace.root,
-    'new-session reset',
-  );
+  await waitForContextBarPath(page, '작업 폴더 없음', 'new-session reset');
   await approvalMode
     .filter({ hasText: '수동 승인' })
     .waitFor({ state: 'visible', timeout: 8_000 });
@@ -754,7 +757,7 @@ async function runStartAndSettlementFlow(page, harness) {
         existingRestoreMs,
         newSessionResetMs,
         selectedPath: selectedComputerPath,
-        newSessionPath: harness.workspace.root,
+        newSessionPath: null,
         approvalMode: {
           shellDefault: 'basic',
           restoredThread: 'full_access',
@@ -795,26 +798,62 @@ async function runPlanSteerFlow(page, harness) {
     'steer handoff did not preserve exactly one user transcript message',
   );
   const pendingSteer = page
-    .locator('.pending-steer-message')
+    .locator('.pending-steer-message.is-flushable')
     .filter({ hasText: PLAN_STEER_TEXT });
-  // The daemon can durably accept and apply the steer before Playwright observes
-  // the transient pending decoration. Both states must retain the same message.
-  const steerStateAtObservation =
-    (await pendingSteer.count()) === 1 ? 'pending' : 'applied';
+  await pendingSteer.waitFor({ state: 'visible', timeout: 15_000 });
+  assert(
+    (await pendingSteer.getAttribute('role')) === 'button',
+    'pending steer did not expose its clickable handoff control',
+  );
+  const pendingBubbleAnimationName = await pendingSteer
+    .locator('.transcript-message-bubble')
+    .evaluate(
+      (element) =>
+        globalThis.getComputedStyle(element, '::after').animationName,
+    );
+  assert(
+    pendingBubbleAnimationName === 'pending-steer-glint',
+    'pending steer did not expose the expected glowing state',
+  );
+  await page.waitForTimeout(300);
+  assert(
+    (await pendingSteer.count()) === 1 && (await pendingSteer.isVisible()),
+    'steer applied before the user clicked its pending message',
+  );
   await planCard.waitFor({ state: 'visible', timeout: 15_000 });
   assert(
     ((await planCard.textContent()) ?? '').includes(PLAN_STEER_STEP),
     'steer handoff removed the visible in-progress plan',
   );
 
-  await cancelRun.click();
+  await pendingSteer.click();
+  await pendingSteer.waitFor({ state: 'hidden', timeout: 15_000 });
+  await waitForTranscriptMarkerCount(page, [
+    { text: PLAN_STEER_TEXT, count: 1 },
+    { text: PLAN_STEER_FINAL_TEXT, count: 1 },
+  ]);
   await cancelRun.waitFor({ state: 'hidden', timeout: 15_000 });
+
+  await composer.fill(PLAN_STEER_FOLLOWUP_PROMPT);
+  await page.getByRole('button', { name: '보내기' }).click();
+  await waitForTranscriptMarkerCount(page, [
+    { text: PLAN_STEER_FOLLOWUP_PROMPT, count: 1 },
+    { text: PLAN_STEER_FOLLOWUP_FINAL_TEXT, count: 1 },
+  ]);
+  await cancelRun.waitFor({ state: 'hidden', timeout: 15_000 });
+  assert(
+    (await page.locator('.pending-steer-message').count()) === 0,
+    'ordinary follow-up was incorrectly retained as another pending steer',
+  );
   return {
     planStep: PLAN_STEER_STEP,
     steerText: PLAN_STEER_TEXT,
-    steerStateAtObservation,
+    steerStateAtObservation: 'pending',
+    pendingBubbleAnimationName,
     preservedAcrossSteerHandoff: true,
-    cancelledExplicitly: true,
+    flushedExplicitly: true,
+    appliedExactlyOnce: true,
+    followupStartedNewTurn: true,
   };
 }
 
@@ -993,6 +1032,7 @@ async function runApprovalFlow(page, harness) {
     .locator('.assistant-title-dot.connected')
     .waitFor({ state: 'visible', timeout: 15_000 });
   await selectPersistedThread(page, APPROVAL_PROMPT);
+  await approvalDialog.waitFor({ state: 'hidden', timeout: 15_000 });
   await waitForTranscriptMarkerCount(page, [
     { text: APPROVAL_PROMPT, count: 1 },
     { text: APPROVAL_FINAL_TEXT, count: 1 },

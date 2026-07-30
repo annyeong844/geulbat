@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { stableStringify } from '@geulbat/content-identity/stable-json';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
 import {
@@ -263,22 +264,6 @@ function recoveryIdentityToJson(
   };
 }
 
-function canonicalJson(value: JsonValue): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  }
-  if (value !== null && typeof value === 'object') {
-    return `{${Object.keys(value)
-      .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${canonicalJson(value[key] as JsonValue)}`,
-      )
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
 function isSameJsonValue(left: JsonValue, right: JsonValue): boolean {
-  return canonicalJson(left) === canonicalJson(right);
+  return stableStringify(left) === stableStringify(right);
 }

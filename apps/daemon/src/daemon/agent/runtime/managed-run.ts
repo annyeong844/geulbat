@@ -57,7 +57,9 @@ function startManagedRunInternal(
   const runContext = createRunContext({
     threadId: params.runContext.threadId ?? assertValidThreadId(randomUUID()),
     stateRoot: params.runContext.stateRoot,
-    workingDirectory: params.runContext.workingDirectory,
+    ...(params.runContext.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: params.runContext.workingDirectory }),
   });
   const threadId = runContext.threadId;
   const ownerThreadId = assertValidThreadId(params.ownerThreadId ?? threadId);

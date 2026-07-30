@@ -189,7 +189,9 @@ function resolveThreadRunPreferences(
   }
   const request = checkpoint.request;
   return {
-    workingDirectory: request.workingDirectory,
+    ...(request.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: request.workingDirectory }),
     permissionMode: request.permissionMode,
     ...(request.reasoningEffort === undefined
       ? {}

@@ -201,25 +201,12 @@ export async function commitThreadArtifactUpdateVersion(
           renderer: artifact.renderer,
         };
       }
-      if (artifact.latestVersion !== args.baseVersion) {
-        return {
-          ok: false,
-          reason: 'version_conflict',
-          latestVersion: artifact.latestVersion,
-        };
-      }
-
-      const nextVersionNumber = artifact.latestVersion + 1;
+      const nextVersionNumber = args.baseVersion + 1;
       const baseVersion = store.versions.find(
         (candidate) =>
           candidate.artifactId === artifact.artifactId &&
           candidate.version === args.baseVersion,
       );
-      const nextArtifact: ArtifactRecord = {
-        ...artifact,
-        latestVersion: nextVersionNumber,
-        updatedAt: args.timestamp,
-      };
       const version: ArtifactVersionRecord = {
         artifactId: artifact.artifactId,
         version: nextVersionNumber,
@@ -237,6 +224,38 @@ export async function commitThreadArtifactUpdateVersion(
             ? {}
             : { planStamp: baseVersion.planStamp }
           : { planStamp: args.planStamp }),
+      };
+      if (artifact.latestVersion !== args.baseVersion) {
+        const existingVersion = store.versions.find(
+          (candidate) =>
+            candidate.artifactId === artifact.artifactId &&
+            candidate.version === nextVersionNumber,
+        );
+        if (
+          existingVersion !== undefined &&
+          isDeepStrictEqual(existingVersion, version)
+        ) {
+          return {
+            ok: true,
+            artifact,
+            version: existingVersion,
+            ref: {
+              artifactId: artifact.artifactId,
+              version: nextVersionNumber,
+            },
+          };
+        }
+        return {
+          ok: false,
+          reason: 'version_conflict',
+          latestVersion: artifact.latestVersion,
+        };
+      }
+
+      const nextArtifact: ArtifactRecord = {
+        ...artifact,
+        latestVersion: nextVersionNumber,
+        updatedAt: args.timestamp,
       };
 
       await saveThreadArtifactStore(args.workspaceRoot, args.threadId, {

@@ -223,6 +223,22 @@ void test('buildArtifactApplyRunDraftFromAuthority produces a top-level run requ
   assert.match(draft.prompt, /<\/artifact_preview>/);
 });
 
+void test('artifact follow-up runs preserve cwd-free chat mode', () => {
+  const draft = buildArtifactApplyRunDraftFromAuthority({
+    artifact: createThreadArtifactVersion(),
+    sourceAuthority: createArtifactSourceAuthority(
+      {
+        workingDirectory: '',
+        filePath: '/tmp/ch01.md',
+      },
+      { requireFilePath: true },
+    ),
+  });
+
+  assert.ok(draft);
+  assert.equal(Object.hasOwn(draft, 'workingDirectory'), false);
+});
+
 void test('buildArtifactApplyRunDraftFromAuthority requires full artifact session authority and target file context', () => {
   const artifact = createThreadArtifactVersion();
 

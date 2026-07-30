@@ -1,6 +1,6 @@
 import { isRecord } from '../../../runtime-json.js';
 import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
-import { ProviderReplayScopeMismatchError } from '../provider-error.js';
+import { assertProviderReplayScope } from '../provider-replay-scope.js';
 import { ProviderHistoryItemInvalidError } from '../transport/responses-wire-input.js';
 import type { HistoryItem } from '../wire/types.js';
 import { requireQwenNonEmpty } from './config.js';
@@ -96,7 +96,7 @@ export function buildQwenChatMessages(input: {
         });
         break;
       case 'backend_item':
-        assertQwenReplayScope(
+        assertProviderReplayScope(
           item.providerReplayScopeId,
           input.providerReplayScopeId,
         );
@@ -233,19 +233,6 @@ function readQwenBackendMessageText(value: unknown): string {
     text += part['text'];
   }
   return text;
-}
-
-function assertQwenReplayScope(
-  itemScope: ProviderReplayScopeId | null | undefined,
-  targetScope: ProviderReplayScopeId | undefined,
-): void {
-  if (
-    targetScope !== undefined &&
-    itemScope !== undefined &&
-    itemScope !== targetScope
-  ) {
-    throw new ProviderReplayScopeMismatchError();
-  }
 }
 
 class QwenUnsupportedAttachmentError extends Error {

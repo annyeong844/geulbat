@@ -12,6 +12,9 @@ export interface ProviderRoundFixture {
   events?: ProviderResponseEventFixture[];
   error?: Error;
   structuredOutputs?: ProviderStructuredOutput[];
+  durableRequest?: Parameters<
+    NonNullable<CallModelInput['onDurableProviderRequestPrepared']>
+  >[0];
   inspectInput?: (input: CallModelInput) => void;
 }
 
@@ -49,9 +52,18 @@ export function createScriptedProviderCallModel(
     const replayFixtureEvents = async (
       onAssistantDelta: Parameters<typeof parseResponseEvents>[1] | undefined,
       historyProjection: 'normalized' | 'provider_output',
+      onDurableRequestPrepared: CallModelInput['onDurableProviderRequestPrepared'],
     ) => {
       if (fixture.error) {
         throw fixture.error;
+      }
+      if (fixture.durableRequest !== undefined) {
+        if (onDurableRequestPrepared === undefined) {
+          throw new Error(
+            'scripted durable provider request requires a preparation callback',
+          );
+        }
+        await onDurableRequestPrepared(fixture.durableRequest);
       }
       const result = await parseResponseEvents(
         toAsyncEvents(fixture.events ?? []),
@@ -75,12 +87,23 @@ export function createScriptedProviderCallModel(
         accessToken: 'token',
         accountId: 'account',
       }),
-      streamResponsesOverWebSocket: ({ onAssistantDelta }) =>
-        replayFixtureEvents(onAssistantDelta, 'provider_output'),
+      streamResponsesOverWebSocket: ({
+        onAssistantDelta,
+        onDurableRequestPrepared,
+      }) =>
+        replayFixtureEvents(
+          onAssistantDelta,
+          'provider_output',
+          onDurableRequestPrepared,
+        ),
       // Grok routes through its own transport; without this stub a
       // grok-selected round would hit the real websocket endpoint.
-      streamGrokOAuthResponses: (_grokInput, options) =>
-        replayFixtureEvents(options.onAssistantDelta, 'provider_output'),
+      streamGrokOAuthResponses: (grokInput, options) =>
+        replayFixtureEvents(
+          options.onAssistantDelta,
+          'provider_output',
+          grokInput.onDurableRequestPrepared,
+        ),
     });
   };
 }

@@ -113,6 +113,62 @@ void test('RunChannelClient restores active-run identity before auth completes a
   assert.deepEqual(reconnectAuth.threadSubscriptions, [threadId]);
 });
 
+void test('RunChannelClient does not replace a durable cursor with socket-local child activity', async () => {
+  const harness = createClientHarness();
+  const runId = brandRunId('run-reconnect-child-status');
+  const childRunId = brandRunId('run-reconnect-child');
+  const threadId = brandThreadId('123e4567-e89b-42d3-a456-426614174024');
+  const childThreadId = brandThreadId('123e4567-e89b-42d3-a456-426614174025');
+  const socket = await connectAuthenticatedClient(harness);
+  socket.emitMessage({
+    type: 'run.event',
+    event: {
+      runId,
+      threadId,
+      seq: 4,
+      ts: new Date().toISOString(),
+      type: 'run_ack',
+      payload: { runId, threadId },
+    },
+  });
+  socket.emitMessage({
+    type: 'run.event',
+    runEventCursor: false,
+    event: {
+      runId,
+      threadId,
+      seq: 0,
+      ts: new Date().toISOString(),
+      type: 'subagent_status',
+      payload: {
+        parentRunId: runId,
+        childRunId,
+        childThreadId,
+        subagentType: 'explorer',
+        capabilities: [],
+        toolSurface: 'explorer',
+        runtime: {
+          phase: 'provider_waiting',
+          observedAt: new Date().toISOString(),
+          partialOutputAvailable: false,
+        },
+      },
+    },
+  });
+
+  socket.close();
+  harness.scheduler.runNext();
+  const reconnectSocket = getSocket(harness.sockets, 1);
+  reconnectSocket.emitOpen();
+  const reconnectAuth = JSON.parse(
+    reconnectSocket.sent[0] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(reconnectAuth.type, 'run.auth');
+  if (reconnectAuth.type === 'run.auth') {
+    assert.deepEqual(reconnectAuth.runEventCursors, [{ runId, seq: 4 }]);
+  }
+});
+
 void test('RunChannelClient clears active identity but retains the terminal cursor across reconnect', async () => {
   const harness = createClientHarness();
   const socket = await connectAuthenticatedClient(harness);

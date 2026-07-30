@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 
 import { isToolObjectParameters } from '../types.js';
 import { createFetchUrlTool } from './web-fetch.js';
@@ -64,6 +65,45 @@ void test('fetch_url forwards extractMode to the runtime owner', async () => {
 
   assert.equal(result.ok, true);
   assert.equal(seenExtractMode, 'markdown');
+});
+
+void test('fetch_url routes public reads through the command host runtime', async () => {
+  let observed:
+    | {
+        url: string;
+        method: string;
+        headers: Record<string, string>;
+        responseBodyMode: string;
+      }
+    | undefined;
+  const tool = createFetchUrlTool({
+    publicHttpRead: {
+      request: async (args) => {
+        observed = args;
+        const body = Buffer.from('complete body', 'utf8');
+        return {
+          ok: true,
+          status: 200,
+          location: null,
+          contentType: 'text/plain',
+          contentLength: body.byteLength,
+          bodyBase64: body.toString('base64'),
+        };
+      },
+    },
+  });
+
+  const result = await tool.execute(
+    { url: 'https://example.com/resource' },
+    { callId: 'call-web-fetch-host-routed' },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(observed?.url, 'https://example.com/resource');
+  assert.equal(observed?.method, 'GET');
+  assert.equal(observed?.headers['accept-encoding'], 'identity');
+  assert.equal(observed?.responseBodyMode, 'full');
+  assert.equal(JSON.parse(result.output).content, 'complete body');
 });
 
 void test('fetch_url returns tool-level failure while preserving structured fetch failure output', async () => {

@@ -103,7 +103,7 @@ export interface SubagentLaunchRequestInput {
   parentRunId: RunId;
   ownerThreadId: ThreadId;
   stateRoot: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   permissionMode?: PermissionMode;
   ultraReasoning?: boolean;
   modelPin: ResolvedChildModelPin;
@@ -167,7 +167,7 @@ export interface SubagentLaunchRequestStore {
     parentRunId: RunId;
     toolCallId: string;
     stateRoot: string;
-    workingDirectory: string;
+    workingDirectory?: string;
     permissionMode?: PermissionMode;
   }): DurableSubagentLaunchRetry;
   markSubagentLaunchStarting(childRunId: RunId): void;
@@ -343,11 +343,6 @@ function resolveCatalogChildModelPin(args: {
   };
 }
 
-export type ChildRunStatus =
-  | 'running'
-  | 'approval_pending'
-  | AgentChildTerminalState;
-
 interface ChildRunSnapshotBase {
   childRunId: RunId;
   childThreadId: ThreadId;
@@ -369,6 +364,7 @@ interface ChildRunActiveSnapshot extends ChildRunSnapshotBase {
 }
 
 export interface ChildRunTerminalSnapshot extends ChildRunSnapshotBase {
+  deliveryId: string;
   status: AgentChildTerminalState;
   result: string;
   completedAt: string;

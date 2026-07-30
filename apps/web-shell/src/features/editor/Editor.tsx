@@ -60,6 +60,7 @@ export interface EditorProps {
   onConflictReload: () => Promise<void> | void;
   onConflictSaveAsCopy: () => Promise<void> | void;
   onConflictInspect: () => Promise<string | null>;
+  gitReviewTrigger?: ReactNode;
   // 열린 아티팩트가 있으면 리치 에디터 | 아티팩트 | 코드 뷰어 토글에
   // 아티팩트 필이 끼어든다 — 별도 패널이 아니라 이 편집기 표면의 보기
   // 모드다. active면 원고 시트 자리에 artifactSurface가 렌더되고,
@@ -111,6 +112,7 @@ export function Editor({
   onConflictReload,
   onConflictSaveAsCopy,
   onConflictInspect,
+  gitReviewTrigger,
   artifactPill,
   artifactSurface,
 }: EditorProps) {
@@ -469,6 +471,7 @@ export function Editor({
               onOpenFolder={onOpenFolder}
               onOpenRecentFile={onOpenRecentFile}
               onRemoveRecentFile={onRemoveRecentFile}
+              gitReviewTrigger={gitReviewTrigger}
             />
           ) : openingFile ? (
             <ManuscriptSkeleton />
@@ -573,6 +576,7 @@ function ManuscriptEmptyState(props: {
   onOpenFolder?: (() => Promise<void> | void) | undefined;
   onOpenRecentFile?: ((path: string) => Promise<void> | void) | undefined;
   onRemoveRecentFile?: ((path: string) => void) | undefined;
+  gitReviewTrigger?: ReactNode;
 }) {
   const {
     recentFiles,
@@ -580,6 +584,7 @@ function ManuscriptEmptyState(props: {
     onOpenFolder,
     onOpenRecentFile,
     onRemoveRecentFile,
+    gitReviewTrigger,
   } = props;
 
   return (
@@ -597,6 +602,7 @@ function ManuscriptEmptyState(props: {
           폴더 열기
         </button>
       </div>
+      {gitReviewTrigger}
       <div className="recent-files" aria-label="최근 파일">
         <div className="recent-files-heading">최근 파일</div>
         {recentFiles.length > 0 ? (

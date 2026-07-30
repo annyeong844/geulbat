@@ -84,6 +84,12 @@ export const installPackagesTool = defineZodTool({
         'run context is required for install_packages.',
       );
     }
+    if (ctx.workingDirectory === undefined) {
+      return toolError(
+        'execution_failed',
+        'Select a working folder before using install_packages.',
+      );
+    }
     const services: InstallPackagesToolServices | undefined =
       ctx.runtimeServices;
     const runtime = services?.ptc.packageInstall;
@@ -105,7 +111,7 @@ export const installPackagesTool = defineZodTool({
       runContext: createRunContext({
         threadId: ctx.threadId,
         stateRoot: ctx.stateRoot,
-        workingDirectory: ctx.workingDirectory ?? '',
+        workingDirectory: ctx.workingDirectory,
       }),
       request: {
         ...(args.language === undefined ? {} : { language: args.language }),

@@ -66,7 +66,9 @@ function snapshotActiveRun(run: ActiveRun): ActiveRunSnapshot {
   return {
     runId: run.runId,
     threadId: run.threadId,
-    workingDirectory: run.workingDirectory,
+    ...(run.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: run.workingDirectory }),
     ownerThreadId: run.ownerThreadId,
     startedAt: run.startedAt,
     aborted: run.abortController.signal.aborted,

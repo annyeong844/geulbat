@@ -99,7 +99,10 @@ export async function appendTranscriptEntry(
   workspaceRoot: string,
   threadId: string,
   entry: ThreadMessageInput,
-  options: { expectedLastEntryId?: string } = {},
+  options: {
+    expectedLastEntryId?: string;
+    ifAbsentEntryId?: string;
+  } = {},
 ): Promise<TranscriptEntry> {
   const appended = await appendTranscriptEntriesInternal(
     workspaceRoot,

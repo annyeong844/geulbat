@@ -28,20 +28,23 @@ interface SessionChildIoDeps {
    * claimed 세션이 terminal에 도달했을 때의 정착. 세션 레지스트리와 저널을
    * 소유한 세션 코어만 이것을 할 수 있으므로 주입받는다.
    */
-  finalizeTerminal(entry: SessionEntry): Promise<void>;
+  finalizeTerminal: (entry: SessionEntry) => Promise<void>;
 }
 
 interface SessionChildIo {
-  attachChildProcess(entry: SessionEntry): void;
-  applyStreamBackpressure(
+  attachChildProcess: (entry: SessionEntry) => void;
+  applyStreamBackpressure: (
     entry: SessionEntry,
     stream: HostCommandOutputStream,
-  ): void;
-  requestGracefulTermination(
+  ) => void;
+  requestGracefulTermination: (
     entry: SessionEntry,
     terminal: SessionTerminalState,
-  ): void;
-  forceTermination(entry: SessionEntry, terminal: SessionTerminalState): void;
+  ) => void;
+  forceTermination: (
+    entry: SessionEntry,
+    terminal: SessionTerminalState,
+  ) => void;
 }
 
 export function createSessionChildIo(deps: SessionChildIoDeps): SessionChildIo {

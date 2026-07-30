@@ -787,7 +787,11 @@ export function createCommandSessionHost(
         entry.claimPromise = claimRunning(entry, args.signal);
         return await entry.claimPromise;
       }
-      if (entry.phase === 'unclaimed_terminal' && inlineEligible(entry)) {
+      if (
+        entry.phase === 'unclaimed_terminal' &&
+        args.requiresOutputRef !== true &&
+        inlineEligible(entry)
+      ) {
         // inline_released — 디스크 0회, 즉시 resident 제거 (§4.2).
         const snapshot = buildSnapshot(entry, inlineEligible, {
           includeInline: true,

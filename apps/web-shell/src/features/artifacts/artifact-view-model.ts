@@ -1,6 +1,6 @@
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import {
-  isSamePlanRenderingStamp,
+  isSameApprovedPlanRef,
   type PlanningWorkflowSnapshot,
   type PlanRenderingStamp,
 } from '@geulbat/protocol/planning-workflow';
@@ -94,7 +94,7 @@ export function resolvePlanRenderingStampProjection(
     planningWorkflowSnapshot === null || planningWorkflowSnapshot === undefined
       ? 'historical'
       : planningWorkflowSnapshot.state !== 'collecting' &&
-          isSamePlanRenderingStamp(stamp, planningWorkflowSnapshot)
+          isSameApprovedPlanRef(stamp, planningWorkflowSnapshot)
         ? 'current'
         : 'superseded';
   const statusLabel =

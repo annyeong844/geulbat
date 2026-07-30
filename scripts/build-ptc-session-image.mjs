@@ -28,6 +28,23 @@ const DOCKER_CLIENT_ENV_KEYS = [
 ];
 
 const VERIFY_SCRIPT = `set -eu
+test "$(id -u)" -ne 0
+test "$(awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)" = "1"
+test "$(awk '/^CapEff:/ { print $2 }' /proc/self/status)" = "0000000000000000"
+test "$(ls -1 /sys/class/net)" = "lo"
+if touch /workspace/geulbat-rootfs-write-check 2>/dev/null; then
+  echo "PTC session image root filesystem is writable" >&2
+  exit 1
+fi
+mkdir -p "$HOME" "$XDG_CACHE_HOME"
+touch /geulbat/scratch/geulbat-scratch-write-check
+touch /tmp/geulbat-tmp-write-check
+printf '#!/bin/sh\\nexit 0\\n' > /geulbat/scratch/geulbat-noexec-check
+chmod +x /geulbat/scratch/geulbat-noexec-check
+if /geulbat/scratch/geulbat-noexec-check 2>/dev/null; then
+  echo "PTC session scratch tmpfs permits executable files" >&2
+  exit 1
+fi
 command -v bash >/dev/null
 command -v base64 >/dev/null
 command -v python3 >/dev/null
@@ -161,7 +178,40 @@ export function buildPtcSessionImageDockerArgs(options) {
 }
 
 export function buildPtcSessionImageVerifyArgs(imageRef) {
-  return ['run', '--rm', '--entrypoint', 'sh', imageRef, '-lc', VERIFY_SCRIPT];
+  return [
+    'run',
+    '--rm',
+    '--network',
+    'none',
+    '--user',
+    '65534:65534',
+    '--read-only',
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges',
+    '--tmpfs',
+    '/geulbat/scratch:rw,noexec,nosuid,nodev,mode=1777,size=64m',
+    '--tmpfs',
+    '/tmp:rw,nosuid,nodev,mode=1777,size=64m',
+    '--cpus',
+    '1',
+    '--memory',
+    '512m',
+    '--pids-limit',
+    '128',
+    '-e',
+    'HOME=/geulbat/scratch/home',
+    '-e',
+    'TMPDIR=/tmp',
+    '-e',
+    'XDG_CACHE_HOME=/geulbat/scratch/cache',
+    '--entrypoint',
+    'sh',
+    imageRef,
+    '-lc',
+    VERIFY_SCRIPT,
+  ];
 }
 
 export function createDockerClientEnv(sourceEnv = process.env) {

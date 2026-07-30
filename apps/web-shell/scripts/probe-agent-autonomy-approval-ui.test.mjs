@@ -5,9 +5,11 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 
 import {
-  attachRunChannelCdpObserver,
+  attachPromptInputRequestObserver,
+  attachRunChannelPageObserver,
   createApprovalUiFrameObserver,
   createApprovalUiProbeArtifacts,
+  parseComputerRootRelativeDirectoryPath,
   runAgentAutonomyApprovalUiProbe,
 } from './probe-agent-autonomy-approval-ui.mjs';
 import { createAgentAutonomyWorkloadDeclaration } from '../../../scripts/evaluate-agent-autonomy.mjs';
@@ -19,29 +21,6 @@ const FILE_PATH = '/repo/.audit/probe/workspace/approval-marker.txt';
 const FILE_CONTENT = 'marker\n';
 const PROMPT = 'write exactly one marker';
 const ANSWER = 'APPROVAL_UI_R2_COMPLETE';
-
-class FakeCdpSession {
-  #listeners = new Map();
-
-  detached = false;
-  sentMethods = [];
-
-  on(event, listener) {
-    this.#listeners.set(event, listener);
-  }
-
-  emit(event, payload) {
-    this.#listeners.get(event)?.(payload);
-  }
-
-  async send(method) {
-    this.sentMethods.push(method);
-  }
-
-  async detach() {
-    this.detached = true;
-  }
-}
 
 function runEvent(seq, type, payload, ts) {
   return JSON.stringify({
@@ -269,14 +248,27 @@ void test('a started attempt preserves unresolved approval and failed oracle on 
   ]);
 });
 
-void test('the CDP observer routes only run-channel frames and detaches', async () => {
-  const session = new FakeCdpSession();
+void test('the page observer routes only main-frame run-channel observations', async () => {
   const sent = [];
   const received = [];
-  const observation = await attachRunChannelCdpObserver({
-    context: {
-      async newCDPSession() {
-        return session;
+  const mainFrame = {};
+  const otherFrame = {};
+  let bindingCallback;
+  let initScript;
+  let initScriptArgument;
+  const observation = await attachRunChannelPageObserver({
+    page: {
+      async exposeBinding(_name, callback) {
+        bindingCallback = callback;
+        return undefined;
+      },
+      async addInitScript(script, argument) {
+        initScript = script;
+        initScriptArgument = argument;
+        return undefined;
+      },
+      mainFrame() {
+        return mainFrame;
       },
     },
     now: () => new Date('2026-07-29T00:00:00.000Z'),
@@ -288,31 +280,28 @@ void test('the CDP observer routes only run-channel frames and detaches', async 
         received.push({ payload, at });
       },
     },
-    page: {},
   });
 
-  session.emit('Network.webSocketCreated', {
-    requestId: 'other',
-    url: 'ws://127.0.0.1:3456/other',
+  assert.equal(typeof bindingCallback, 'function');
+  assert.equal(typeof initScript, 'function');
+  assert.deepEqual(initScriptArgument, {
+    bindingName: '__geulbatR2ObserveRunChannelFrame',
   });
-  session.emit('Network.webSocketCreated', {
-    requestId: 'run-channel',
-    url: 'ws://127.0.0.1:3456/api/ws',
-  });
-  session.emit('Network.webSocketFrameSent', {
-    requestId: 'other',
-    response: { payloadData: 'ignored' },
-  });
-  session.emit('Network.webSocketFrameSent', {
-    requestId: 'run-channel',
-    response: { payloadData: 'sent-frame' },
-  });
-  session.emit('Network.webSocketFrameReceived', {
-    requestId: 'run-channel',
-    response: { payloadData: 'received-frame' },
-  });
+  bindingCallback({ frame: otherFrame }, { kind: 'socket_created' });
+  bindingCallback({ frame: mainFrame }, { kind: 'socket_created' });
+  bindingCallback(
+    { frame: otherFrame },
+    { kind: 'frame_sent', payload: 'ignored' },
+  );
+  bindingCallback(
+    { frame: mainFrame },
+    { kind: 'frame_sent', payload: 'sent-frame' },
+  );
+  bindingCallback(
+    { frame: mainFrame },
+    { kind: 'frame_received', payload: 'received-frame' },
+  );
 
-  assert.deepEqual(session.sentMethods, ['Network.enable']);
   assert.equal(observation.observedSocketCount(), 1);
   assert.deepEqual(sent, [
     {
@@ -327,7 +316,91 @@ void test('the CDP observer routes only run-channel frames and detaches', async 
     },
   ]);
   await observation.close();
-  assert.equal(session.detached, true);
+});
+
+void test('the visible setup accepts only a canonical computer-root-relative workspace', () => {
+  assert.deepEqual(
+    parseComputerRootRelativeDirectoryPath('home/runner/work/geulbat/geulbat'),
+    ['home', 'runner', 'work', 'geulbat', 'geulbat'],
+  );
+  assert.throws(
+    () =>
+      parseComputerRootRelativeDirectoryPath(
+        '/home/runner/work/geulbat/geulbat',
+      ),
+    /computer-root-relative/u,
+  );
+  assert.throws(
+    () => parseComputerRootRelativeDirectoryPath('home/user/../elsewhere'),
+    /canonical directory segments/u,
+  );
+});
+
+void test('a prompt-ref run start requires one exact same-page prompt upload', () => {
+  let requestListener;
+  const page = {
+    on(event, listener) {
+      assert.equal(event, 'request');
+      requestListener = listener;
+    },
+    removeListener(event, listener) {
+      assert.equal(event, 'request');
+      assert.equal(listener, requestListener);
+      requestListener = undefined;
+    },
+  };
+  const promptInputObservation = attachPromptInputRequestObserver({
+    baseOrigin: 'http://127.0.0.1:3456',
+    expectedPrompt: PROMPT,
+    page,
+  });
+  assert.equal(typeof requestListener, 'function');
+  requestListener({
+    method: () => 'POST',
+    postData: () => PROMPT,
+    url: () => 'http://127.0.0.1:3456/api/run/prompt-inputs',
+  });
+
+  const observer = createApprovalUiFrameObserver({
+    expectedAnswer: ANSWER,
+    expectedFileContent: FILE_CONTENT,
+    expectedFilePath: FILE_PATH,
+    expectedModelId: 'gpt-5.6-sol',
+    expectedPrompt: PROMPT,
+    expectedReasoningEffort: 'medium',
+    expectedServiceTier: 'standard',
+    matchesExpectedPromptReference: (promptRef) =>
+      promptInputObservation.matchesExpectedPromptReference(promptRef),
+  });
+  observer.arm();
+  observer.observeSent(
+    JSON.stringify({
+      type: 'run.start',
+      request: {
+        promptRef: 'run-prompt-input:request-1',
+        modelId: 'gpt-5.6-sol',
+        permissionMode: 'basic',
+        reasoningEffort: 'medium',
+        serviceTier: 'standard',
+      },
+    }),
+    '2026-07-29T00:00:00.000Z',
+  );
+  observer.observeReceived(
+    runEvent(
+      0,
+      'run_ack',
+      { runId: RUN_ID, threadId: THREAD_ID },
+      '2026-07-29T00:00:01.000Z',
+    ),
+  );
+
+  assert.ok(
+    observer.fail('2026-07-29T00:00:02.000Z', 'probe_timeout'),
+    'the exact prompt upload should admit the promptRef run start',
+  );
+  promptInputObservation.close();
+  assert.equal(requestListener, undefined);
 });
 
 void test('the live probe disconnects its CDP browser when setup fails', async (t) => {

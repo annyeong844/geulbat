@@ -45,7 +45,7 @@ type RunChannelBackgroundNotifications =
 type RunChannelArtifactFrameToolDispatch = (args: {
   threadId: ThreadId;
   runId: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   computerSessionId: string;
   toolName: RunToolRequest['toolName'];
   toolArgs: RunToolRequest['args'];
@@ -55,7 +55,11 @@ type RunChannelArtifactFrameToolDispatch = (args: {
 
 export type RunChannelRuntimeContext = Omit<
   AgentRuntimeServices,
-  'activeRuns' | 'agent' | 'approvalGate' | 'backgroundNotifications'
+  | 'activeRuns'
+  | 'agent'
+  | 'approvalGate'
+  | 'backgroundNotifications'
+  | 'provider'
 > & {
   agent: AgentRuntimeAgentServices & {
     loopImplementationAdmission: AgentLoopImplementationAdmission;
@@ -68,12 +72,17 @@ export type RunChannelRuntimeContext = Omit<
   computerSessionId: string;
   homeStateRoot: string;
   liveRunEvents: LiveRunEventStore;
+  provider: AgentRuntimeServices['provider'] & {
+    durableRequestRecovery: NonNullable<
+      AgentRuntimeServices['provider']['durableRequestRecovery']
+    >;
+  };
   runCheckpoints: RunCheckpointStore;
 };
 
 export type RunChannelControlContext = Pick<
   RunChannelRuntimeContext,
-  'activeRuns' | 'approvalGate' | 'runCheckpoints'
+  'activeRuns' | 'approvalGate' | 'provider' | 'runCheckpoints'
 >;
 
 export type RunChannelSubscriptionContext = Pick<

@@ -19,6 +19,7 @@ type DirectoryEntry = Extract<FileTreeNode, { type: 'directory' }>;
 interface Props {
   title: string;
   confirmLabel: string;
+  clearLabel?: string;
   initialPath: string;
   browsePath: string;
   browseStartPath: string;
@@ -29,12 +30,14 @@ interface Props {
   favoriteDirectories?: readonly DirectoryPreferenceEntry[];
   onToggleFavorite?: ((path: string, pinned: boolean) => void) | undefined;
   onSelect: (path: string) => void;
+  onClear?: () => void;
   onClose: () => void;
 }
 
 export function ComputerDirectoryPickerDialog({
   title,
   confirmLabel,
+  clearLabel,
   initialPath,
   browsePath,
   browseStartPath,
@@ -43,6 +46,7 @@ export function ComputerDirectoryPickerDialog({
   favoriteDirectories = [],
   onToggleFavorite,
   onSelect,
+  onClear,
   onClose,
 }: Props) {
   const [currentPath, setCurrentPath] = useState(initialPath);
@@ -301,6 +305,15 @@ export function ComputerDirectoryPickerDialog({
             </div>
 
             <div className="computer-directory-picker-actions">
+              {clearLabel !== undefined && onClear !== undefined ? (
+                <button
+                  type="button"
+                  className="video-settings-cancel"
+                  onClick={onClear}
+                >
+                  {clearLabel}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="video-settings-save"

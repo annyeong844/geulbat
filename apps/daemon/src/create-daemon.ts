@@ -20,6 +20,10 @@ import {
   createReactBundleInlineCompileRoutes,
 } from './adapter/web/routes/react-bundle-inline-compile.js';
 import { createFilesRoutes } from './adapter/web/routes/files.js';
+import {
+  createGitReviewRoutes,
+  type GitReviewRoutesService,
+} from './adapter/web/routes/git-review.js';
 import { createArtifactRuntimePersistenceRoutes } from './adapter/web/routes/artifact-runtime-persistence.js';
 import { createRunInputRoutes } from './adapter/web/routes/run-inputs.js';
 import { createThreadsRoutes } from './adapter/web/routes/threads.js';
@@ -29,6 +33,7 @@ import { createProviderUsageRoutes } from './adapter/web/routes/provider-usage.j
 import { createDirectoryPreferencesRoutes } from './adapter/web/routes/directory-preferences.js';
 import { createPluginRoutes } from './adapter/web/routes/plugins.js';
 import { createInputRefRoutes } from './adapter/web/routes/input-refs.js';
+import { createGitReviewObservationService } from './daemon/git-review-service.js';
 import type {
   ProviderAuthRoutesContext,
   ThreadsRoutesContext,
@@ -105,11 +110,11 @@ export async function createDaemon(options: DaemonOptions = {}) {
       )}`.trim(),
     );
   }
-  // 플러그인·MCP·마켓플레이스는 README가 분류한 supporting capability다. 이들의
-  // 영속 파일이 손상되면 그 내용을 조용히 받아들이지 않는 것(fail-closed)은
-  // 옳지만, 그 거부를 부팅 실패로 승격시키면 core 워크플로(파일·런·승인·도구)
-  // 전체가 서지 못한다. 재시작해도 같은 파일을 다시 읽으므로 감시자와 함께
-  // 재시작 루프가 되고, 사용자는 설정 파일 하나 때문에 앱을 열 수 없다.
+  // 플러그인·MCP는 README가 분류한 supporting capability다. 이들의 영속 파일이
+  // 손상되면 그 내용을 조용히 받아들이지 않는 것(fail-closed)은 옳지만, 그
+  // 거부를 부팅 실패로 승격시키면 core 워크플로(파일·런·승인·도구) 전체가 서지
+  // 못한다. 재시작해도 같은 파일을 다시 읽으므로 감시자와 함께 재시작 루프가
+  // 되고, 사용자는 설정 파일 하나 때문에 앱을 열 수 없다.
   //
   // 그래서 실패를 여기서 가둔다. 조용한 폴백이 아니다: 이유를 진단으로 남기고,
   // 해당 확장 표면은 초기화되지 않은 상태로 남아 그 라우트가 계속 실패를
@@ -121,9 +126,10 @@ export async function createDaemon(options: DaemonOptions = {}) {
   await initializeExtensionSurface('plugins', () =>
     daemonContext.plugins.initialize(),
   );
-  await initializeExtensionSurface('pluginMarketplaces', () =>
-    daemonContext.pluginMarketplaces.initialize(),
-  );
+  // 마켓플레이스 카탈로그 검사는 설치된 source의 모든 엔트리를 다시 읽는다.
+  // core 부팅과 무관한 이 작업은 marketplace 라우트가 실제로 요청될 때 그 요청이
+  // 소유한다. store.initialize()가 직렬화·멱등성을 보장하므로 동시 첫 요청도 같은
+  // 초기화 결과를 공유하며, 실패는 기존 plugin operation 오류 경계로 보고된다.
   const app = express();
   const configuredAllowedOrigins = readConfiguredAllowedOrigins();
 
@@ -202,6 +208,27 @@ export async function createDaemon(options: DaemonOptions = {}) {
         : { computerFileScope: daemonContext.computerFileScope }),
     }),
   );
+  const gitReviewObservationService = createGitReviewObservationService({
+    hostCommands: daemonContext.hostCommands,
+    stateRoot: homeStateRoot,
+    ...(daemonContext.computerFileScope === undefined
+      ? {}
+      : { coordinateBase: daemonContext.computerFileScope.root }),
+    // Git review uses the daemon's existing lossless command paging and
+    // transport boundary. Crossing it is an explicit resource result,
+    // never a silently truncated successful review.
+    pageLimitBytes: daemonContext.hostCommandInlineMaxBytes,
+    maxOutputBytesPerStream: daemonContext.hostCommandInlineMaxBytes,
+    maxFileBytes: daemonContext.hostCommandInlineMaxBytes,
+  });
+  const gitReviewRoutesService = {
+    summary: (request, options) =>
+      gitReviewObservationService.summary(request, options),
+    file: (request, options) =>
+      gitReviewObservationService.file(request, options),
+    release: (request) => gitReviewObservationService.release(request),
+  } satisfies GitReviewRoutesService;
+  app.use(createGitReviewRoutes({ service: gitReviewRoutesService }));
   app.use(
     createArtifactRuntimePersistenceRoutes({
       homeStateRoot,

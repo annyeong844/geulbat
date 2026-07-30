@@ -19,6 +19,7 @@ import {
   resolveVideoGenerationModelDescriptor,
 } from '@geulbat/protocol/run-contract';
 import type { RunId } from '@geulbat/protocol/ids';
+import type { ModelSettlementIdentity } from '@geulbat/protocol/thread-metadata';
 import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { executeForegroundRun } from './agent/execute-foreground-run.js';
@@ -58,6 +59,8 @@ import { getErrorMessage } from './utils/error.js';
 import { runDetached } from './utils/run-detached.js';
 
 const logger = createLogger('daemon/durable-run-execution');
+const MODEL_ROUND_RECOVERY_OUTCOME_UNKNOWN_MESSAGE =
+  'provider request outcome is unknown; explicit recovery is required before retrying';
 
 /**
  * 이 모듈이 런을 실행하려면 필요한 것. 데몬 런타임 서비스 전체에 체크포인트·
@@ -106,8 +109,8 @@ export async function recoverDurableRunsAtDaemonStartup(
   runtimeContext: DurableRunExecutionServices,
 ): Promise<number> {
   let recoveredCount = 0;
-  const unacknowledgedTerminal =
-    await runtimeContext.runCheckpoints.listUnacknowledgedTerminal();
+  const { running: runningCheckpoints, unacknowledgedTerminal } =
+    await runtimeContext.runCheckpoints.listRecoveryCandidates();
   for (const checkpoint of unacknowledgedTerminal) {
     if (checkpoint.request.backgroundChild === undefined) {
       continue;
@@ -127,7 +130,6 @@ export async function recoverDurableRunsAtDaemonStartup(
     }
   }
 
-  const runningCheckpoints = await runtimeContext.runCheckpoints.listRunning();
   const rootCheckpoints = runningCheckpoints.filter(
     (checkpoint) => checkpoint.request.backgroundChild === undefined,
   );
@@ -142,41 +144,56 @@ export async function recoverDurableRunsAtDaemonStartup(
       recoverableParentRunIds.add(checkpoint.runId);
       continue;
     }
-    const reconciled = await reconcilePersistedTerminalCheckpoint(
-      runtimeContext,
-      checkpoint,
-    );
-    if (reconciled !== null) {
-      recoveredCount += 1;
-      continue;
-    }
+    try {
+      const reconciled = await reconcilePersistedTerminalCheckpoint(
+        runtimeContext,
+        checkpoint,
+      );
+      if (reconciled !== null) {
+        recoveredCount += 1;
+        continue;
+      }
 
-    const ownerId = `daemon-recovery:${randomUUID()}`;
-    const recovery = await startDurableRunRecovery(runtimeContext, checkpoint, {
-      ownerId,
-      sink: () => false,
-      onStarted() {
-        runtimeContext.liveRunEvents.detachOwner(ownerId);
-      },
-    });
-    if (recovery === null) {
-      continue;
+      const ownerId = `daemon-recovery:${randomUUID()}`;
+      const recovery = await startDurableRunRecovery(
+        runtimeContext,
+        checkpoint,
+        {
+          ownerId,
+          sink: () => false,
+          onStarted() {
+            runtimeContext.liveRunEvents.detachOwner(ownerId);
+          },
+        },
+      );
+      if (recovery === null) {
+        continue;
+      }
+      runStates.set(checkpoint.runId, recovery.runState);
+      recoverableParentRunIds.add(checkpoint.runId);
+      runDetached('daemon/durable-run-recovery', () =>
+        recovery.completion.catch((error: unknown) => {
+          logger
+            .withContext({
+              runId: checkpoint.runId,
+              threadId: checkpoint.threadId,
+            })
+            .error('daemon startup run recovery task failed:', {
+              message: getErrorMessage(error),
+            });
+        }),
+      );
+      recoveredCount += 1;
+    } catch (error: unknown) {
+      logger
+        .withContext({
+          runId: checkpoint.runId,
+          threadId: checkpoint.threadId,
+        })
+        .error('daemon startup root checkpoint recovery failed:', {
+          message: getErrorMessage(error),
+        });
     }
-    runStates.set(checkpoint.runId, recovery.runState);
-    recoverableParentRunIds.add(checkpoint.runId);
-    runDetached('daemon/durable-run-recovery', () =>
-      recovery.completion.catch((error: unknown) => {
-        logger
-          .withContext({
-            runId: checkpoint.runId,
-            threadId: checkpoint.threadId,
-          })
-          .error('daemon startup run recovery task failed:', {
-            message: getErrorMessage(error),
-          });
-      }),
-    );
-    recoveredCount += 1;
   }
 
   const allChildRunIds = new Set(
@@ -456,7 +473,9 @@ function readOrCreateSyntheticParentRunState(args: {
     runContext: createRunContext({
       threadId: binding.ownerThreadId,
       stateRoot: args.child.launchInput.stateRoot,
-      workingDirectory: args.child.launchInput.workingDirectory,
+      ...(args.child.launchInput.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: args.child.launchInput.workingDirectory }),
     }),
   });
   args.states.set(binding.parentRunId, created);
@@ -467,6 +486,7 @@ async function settleAndAcknowledgeBackgroundChildCheckpoint(
   runCheckpoints: RunCheckpointStore,
   checkpoint: RunCheckpoint,
   result: BackgroundChildResult,
+  modelSettlementIdentity?: ModelSettlementIdentity,
 ): Promise<RunCheckpoint> {
   const settled = await runCheckpoints.settleRun({
     threadId: checkpoint.threadId,
@@ -480,6 +500,9 @@ async function settleAndAcknowledgeBackgroundChildCheckpoint(
           ok: result.terminalState === 'completed',
         },
       },
+      ...(modelSettlementIdentity === undefined
+        ? {}
+        : { modelSettlementIdentity }),
     },
   });
   const acknowledged = await runCheckpoints.acknowledgeTerminalEvent({
@@ -570,6 +593,7 @@ export async function reconcilePersistedTerminalCheckpoint(
         runtimeContext.runCheckpoints,
         checkpoint,
         recorded.outcome.result,
+        entry.metadata.modelSettlementIdentity,
       );
     }
     return await runtimeContext.runCheckpoints.settleRun({
@@ -588,6 +612,11 @@ export async function reconcilePersistedTerminalCheckpoint(
           type: 'done',
           payload: { answer: entry.content, ok: true },
         },
+        ...(entry.metadata.modelSettlementIdentity === undefined
+          ? {}
+          : {
+              modelSettlementIdentity: entry.metadata.modelSettlementIdentity,
+            }),
       },
     });
   }
@@ -609,7 +638,9 @@ export async function startDurableRunRecovery(
       runContext: {
         threadId: checkpoint.threadId,
         stateRoot: runtimeContext.homeStateRoot,
-        workingDirectory: checkpoint.request.workingDirectory,
+        ...(checkpoint.request.workingDirectory === undefined
+          ? {}
+          : { workingDirectory: checkpoint.request.workingDirectory }),
       },
       abortController,
     },
@@ -618,12 +649,60 @@ export async function startDurableRunRecovery(
   if (!startedRun.ok) {
     return null;
   }
+  if (
+    checkpoint.modelRoundState === null ||
+    runtimeContext.runCheckpoints.claimActiveModelRound === undefined
+  ) {
+    await settleUnavailableModelRoundBoundary(
+      runtimeContext,
+      checkpoint,
+      delivery,
+    );
+    startedRun.finish();
+    logger
+      .withContext({
+        runId: checkpoint.runId,
+        threadId: checkpoint.threadId,
+      })
+      .error('run recovery model round boundary is unavailable:', {
+        code: 'llm_provider_request_outcome_unknown',
+      });
+    return null;
+  }
+  const modelRoundClaimId = randomUUID();
+  const claimedModelRound =
+    await runtimeContext.runCheckpoints.claimActiveModelRound({
+      threadId: checkpoint.threadId,
+      runId: checkpoint.runId,
+      claimId: modelRoundClaimId,
+    });
+  if (
+    !claimedModelRound.ok ||
+    claimedModelRound.checkpoint.modelRoundState === null
+  ) {
+    startedRun.finish();
+    logger
+      .withContext({
+        runId: checkpoint.runId,
+        threadId: checkpoint.threadId,
+      })
+      .error('run recovery model round claim failed:', {
+        code: 'llm_provider_request_outcome_unknown',
+        reason: claimedModelRound.ok
+          ? 'model_round_unavailable'
+          : claimedModelRound.code,
+      });
+    return null;
+  }
+  const claimedModelRoundState = claimedModelRound.checkpoint.modelRoundState;
   const runId = assertValidRunId(startedRun.runId);
   const threadId = assertValidThreadId(startedRun.threadId);
   const runContext = createRunContext({
     threadId,
     stateRoot: runtimeContext.homeStateRoot,
-    workingDirectory: checkpoint.request.workingDirectory,
+    ...(checkpoint.request.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: checkpoint.request.workingDirectory }),
   });
   let executionLifecycle: Awaited<
     ReturnType<typeof createRunExecutionLifecycle>
@@ -820,6 +899,10 @@ export async function startDurableRunRecovery(
               toolLibraryProjectionIdentity:
                 checkpoint.request.toolLibraryProjectionIdentity,
             }),
+        modelRoundRecovery: {
+          claimId: modelRoundClaimId,
+          state: claimedModelRoundState,
+        },
         ...(executionLifecycle.planningWorkflow === undefined
           ? {}
           : { planningWorkflow: executionLifecycle.planningWorkflow }),
@@ -880,6 +963,68 @@ export async function startDurableRunRecovery(
     }
   })();
   return Object.freeze({ completion, runState: startedRun.runState });
+}
+
+async function settleUnavailableModelRoundBoundary(
+  runtimeContext: DurableRunExecutionServices,
+  checkpoint: RunCheckpoint,
+  delivery: DurableRunRecoveryDelivery,
+): Promise<void> {
+  const event = {
+    type: 'error',
+    payload: {
+      code: 'llm_provider_request_outcome_unknown',
+      message: MODEL_ROUND_RECOVERY_OUTCOME_UNKNOWN_MESSAGE,
+    },
+  } as const;
+  runtimeContext.liveRunEvents.startRun({
+    runId: checkpoint.runId,
+    threadId: checkpoint.threadId,
+    ownerId: delivery.ownerId,
+    sink: delivery.sink,
+    eventHistory: checkpoint.eventHistory,
+    async persistRunEvents(events) {
+      await runtimeContext.runCheckpoints.appendRunEvents({
+        threadId: checkpoint.threadId,
+        runId: checkpoint.runId,
+        events,
+      });
+    },
+    async readPersistedRunEvents(throughSeq) {
+      const current = await runtimeContext.runCheckpoints.readThread(
+        checkpoint.threadId,
+      );
+      if (current === null || current.runId !== checkpoint.runId) {
+        return [];
+      }
+      return current.eventHistory.filter((record) => record.seq <= throughSeq);
+    },
+    ...(delivery.replayAfterSeq === undefined
+      ? {}
+      : { replayAfterSeq: delivery.replayAfterSeq }),
+  });
+  try {
+    await runtimeContext.liveRunEvents.commitTerminalRunEvent({
+      runId: checkpoint.runId,
+      event,
+      async persist(envelope) {
+        await runtimeContext.runCheckpoints.settleRun({
+          threadId: checkpoint.threadId,
+          runId: checkpoint.runId,
+          terminal: {
+            eventCursor: envelope.seq,
+            event: envelope.event,
+          },
+        });
+      },
+    });
+    runtimeContext.approvalGate.clearRunRuntime(
+      delivery.ownerId,
+      checkpoint.runId,
+    );
+  } finally {
+    runtimeContext.liveRunEvents.finishRun(checkpoint.runId);
+  }
 }
 
 export function buildRunScopedRuntimeServices(

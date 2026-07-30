@@ -23,9 +23,13 @@ import type {
   ApprovalGrantScope,
   PermissionMode,
 } from '@geulbat/protocol/run-approval';
+import {
+  isModelSettlementIdentity,
+  type ModelSettlementIdentity,
+} from '@geulbat/protocol/thread-metadata';
 import { createLogger } from '@geulbat/structured-logger/logger';
 
-import type { JsonValue } from '../runtime-json.js';
+import { isJsonValue, type JsonValue } from '../runtime-json.js';
 
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import { getErrorMessage } from '../utils/error.js';
@@ -33,12 +37,18 @@ import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 import {
   RUN_CHECKPOINT_SCHEMA_VERSION,
   isMissingFileError,
+  isRunCheckpointModelSettlementSource,
   parseRunCheckpoint,
 } from './run-checkpoint-persistence.js';
 import type {
   RecoverableRunRequest,
   RunCheckpoint,
+  RunCheckpointActiveModelRound,
   RunCheckpointApproval,
+  RunCheckpointModelSettlementSource,
+  RunCheckpointModelUsage,
+  RunCheckpointModelRoundPhase,
+  RunCheckpointModelRoundState,
   RunCheckpointTerminalSnapshot,
   RunCheckpointToolResultReady,
 } from './run-checkpoint-persistence.js';
@@ -53,6 +63,7 @@ import {
 } from './run-event-journal.js';
 
 const logger = createLogger('sessions/run-checkpoint-store');
+const SHA256_ID_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 
 export type { RunCheckpointEvent } from './run-event-journal.js';
 export type { RunCheckpointToolInvocation } from '../runtime-contracts.js';
@@ -60,7 +71,13 @@ export type { RunCheckpointToolInvocation } from '../runtime-contracts.js';
 export type {
   RecoverableRunRequest,
   RunCheckpoint,
+  RunCheckpointActiveModelRound,
   RunCheckpointApproval,
+  RunCheckpointModelRoundPhase,
+  RunCheckpointModelRoundContinuation,
+  RunCheckpointModelRoundState,
+  RunCheckpointModelRoundSettlement,
+  RunCheckpointModelUsage,
   RunCheckpointTerminalEvent,
   RunCheckpointToolResultReady,
 } from './run-checkpoint-persistence.js';
@@ -108,9 +125,26 @@ type RunCheckpointToolInvocationMutationResult =
   | RunCheckpointUnavailableResult
   | { ok: false; code: 'tool_invocation_conflict' };
 
+type RunCheckpointModelRoundMutationResult =
+  | { ok: true; checkpoint: RunCheckpoint; changed: boolean }
+  | RunCheckpointUnavailableResult
+  | {
+      ok: false;
+      code:
+        | 'model_round_unavailable'
+        | 'model_round_claim_conflict'
+        | 'model_round_identity_conflict'
+        | 'model_round_phase_conflict'
+        | 'model_round_settlement_conflict';
+    };
+
 export interface RunCheckpointStore {
   readThread(threadId: ThreadId): Promise<RunCheckpoint | null>;
   hasRunningRun(args: { threadId: ThreadId; runId: RunId }): Promise<boolean>;
+  listRecoveryCandidates(): Promise<{
+    running: RunCheckpoint[];
+    unacknowledgedTerminal: RunCheckpoint[];
+  }>;
   listRunning(): Promise<RunCheckpoint[]>;
   listUnacknowledgedTerminal(): Promise<RunCheckpoint[]>;
   startRun(args: {
@@ -190,6 +224,63 @@ export interface RunCheckpointStore {
     callId: string;
     resultRef: string;
   }): Promise<RunCheckpointToolResultMutationResult>;
+  recordModelRoundPrepared?(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    active: Omit<
+      RunCheckpointActiveModelRound,
+      'claimRevision' | 'phase' | 'logicalRequestIdentity' | 'settlement'
+    > & {
+      logicalRequestIdentity: ModelSettlementIdentity;
+    };
+  }): Promise<RunCheckpointModelRoundMutationResult>;
+  claimActiveModelRound?(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    claimId: string;
+  }): Promise<RunCheckpointModelRoundMutationResult>;
+  markModelRoundPhase?(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    claimId: string;
+    providerRequestIdentity: string;
+    phase: Exclude<RunCheckpointModelRoundPhase, 'prepared'>;
+  }): Promise<RunCheckpointModelRoundMutationResult>;
+  recordModelRoundSettlementCandidate?(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    claimId: string;
+    logicalRequestIdentity: ModelSettlementIdentity;
+    providerRequestIdentity: string;
+    candidateDigest: `sha256:${string}`;
+    usage: RunCheckpointModelUsage;
+  }): Promise<RunCheckpointModelRoundMutationResult>;
+  beginModelRoundSettlementEffects?(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    claimId: string;
+    logicalRequestIdentity: ModelSettlementIdentity;
+    candidateDigest: `sha256:${string}`;
+  }): Promise<RunCheckpointModelRoundMutationResult>;
+  commitModelRoundSettlement?(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    claimId: string;
+    logicalRequestIdentity: ModelSettlementIdentity;
+    candidateDigest: `sha256:${string}`;
+    resultDigest: `sha256:${string}`;
+    result: JsonValue;
+    disposition: 'continue' | 'terminal';
+    source: RunCheckpointModelSettlementSource;
+    continuationHistoryText: string | null;
+  }): Promise<RunCheckpointModelRoundMutationResult>;
+  completeModelRound?(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    claimId: string;
+    logicalRequestIdentity: ModelSettlementIdentity;
+    providerRequestIdentity: string;
+  }): Promise<RunCheckpointModelRoundMutationResult>;
   appendRunEvents(args: {
     threadId: ThreadId;
     runId: RunId;
@@ -198,7 +289,12 @@ export interface RunCheckpointStore {
   settleRun(args: {
     threadId: ThreadId;
     runId: RunId;
-    terminal: Omit<RunCheckpointTerminalSnapshot, 'acknowledged'>;
+    terminal: Omit<
+      RunCheckpointTerminalSnapshot,
+      'acknowledged' | 'modelSettlementIdentity'
+    > & {
+      modelSettlementIdentity?: ModelSettlementIdentity;
+    };
     discardPendingInterjects?: boolean;
   }): Promise<RunCheckpoint>;
   acknowledgeTerminalEvent(args: {
@@ -260,7 +356,9 @@ export function createRunCheckpointStore(args: {
     return checkpoint === null ? null : await hydrateEventHistory(checkpoint);
   }
 
-  async function listCheckpoints(): Promise<RunCheckpoint[]> {
+  async function listCheckpointsMatching(
+    include: (checkpoint: RunCheckpoint) => boolean,
+  ): Promise<RunCheckpoint[]> {
     let names: string[];
     try {
       names = await readdir(root);
@@ -292,19 +390,23 @@ export function createRunCheckpointStore(args: {
         } else {
           runningRunIdByThread.delete(checkpoint.threadId);
         }
-        return await hydrateEventHistory(checkpoint);
+        return include(checkpoint)
+          ? await hydrateEventHistory(checkpoint)
+          : null;
       }),
     );
     const checkpoints: RunCheckpoint[] = [];
     for (const [index, result] of settled.entries()) {
-      if (result.status === 'fulfilled') {
+      if (result.status === 'fulfilled' && result.value !== null) {
         checkpoints.push(result.value);
         continue;
       }
-      logger.error('run checkpoint excluded from enumeration:', {
-        checkpointFile: checkpointNames[index],
-        message: getErrorMessage(result.reason),
-      });
+      if (result.status === 'rejected') {
+        logger.error('run checkpoint excluded from enumeration:', {
+          checkpointFile: checkpointNames[index],
+          message: getErrorMessage(result.reason),
+        });
+      }
     }
     return checkpoints;
   }
@@ -315,15 +417,31 @@ export function createRunCheckpointStore(args: {
       const checkpoint = await readCheckpointFile(threadId);
       return checkpoint?.status === 'running' && checkpoint.runId === runId;
     },
+    async listRecoveryCandidates() {
+      const checkpoints = await listCheckpointsMatching(
+        (checkpoint) =>
+          checkpoint.status === 'running' ||
+          (checkpoint.terminal !== null && !checkpoint.terminal.acknowledged),
+      );
+      return {
+        running: checkpoints.filter(
+          (checkpoint) => checkpoint.status === 'running',
+        ),
+        unacknowledgedTerminal: checkpoints.filter(
+          (checkpoint) =>
+            checkpoint.status === 'terminal' &&
+            checkpoint.terminal !== null &&
+            !checkpoint.terminal.acknowledged,
+        ),
+      };
+    },
     async listRunning() {
-      const checkpoints = await listCheckpoints();
-      return checkpoints.filter(
+      return await listCheckpointsMatching(
         (checkpoint) => checkpoint.status === 'running',
       );
     },
     async listUnacknowledgedTerminal() {
-      const checkpoints = await listCheckpoints();
-      return checkpoints.filter(
+      return await listCheckpointsMatching(
         (checkpoint) =>
           checkpoint.status === 'terminal' &&
           checkpoint.terminal !== null &&
@@ -354,6 +472,12 @@ export function createRunCheckpointStore(args: {
           approvals: [],
           toolInvocations: [],
           toolResultsReady: [],
+          modelRoundState: {
+            nextRound: 0,
+            active: null,
+            settledUsage: createEmptyModelUsage(),
+            continuation: null,
+          },
           eventHistory: [],
           terminal: null,
           createdAt: timestamp,
@@ -813,6 +937,438 @@ export function createRunCheckpointStore(args: {
         return { ok: true, checkpoint, changed: true };
       });
     },
+    async recordModelRoundPrepared({ threadId, runId, active }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        if (!isModelSettlementIdentity(active.logicalRequestIdentity)) {
+          return { ok: false, code: 'model_round_identity_conflict' };
+        }
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const modelRoundState = previous.modelRoundState;
+        if (modelRoundState === null) {
+          return { ok: false, code: 'model_round_unavailable' };
+        }
+        if (active.round !== modelRoundState.nextRound) {
+          return { ok: false, code: 'model_round_identity_conflict' };
+        }
+        const current = modelRoundState.active;
+        if (current !== null && current.claimId !== active.claimId) {
+          return { ok: false, code: 'model_round_claim_conflict' };
+        }
+        if (current !== null) {
+          const attemptOrder = compareModelRoundAttempt(current, active);
+          if (attemptOrder > 0) {
+            return { ok: false, code: 'model_round_identity_conflict' };
+          }
+          if (attemptOrder === 0) {
+            if (isSamePreparedModelRound(current, active)) {
+              return { ok: true, checkpoint: previous, changed: false };
+            }
+            const legacyIdentityMigration =
+              current.logicalRequestIdentity === null &&
+              current.settlement === null &&
+              isSamePreparedModelRound(
+                {
+                  ...current,
+                  logicalRequestIdentity: active.logicalRequestIdentity,
+                },
+                active,
+              );
+            if (!legacyIdentityMigration) {
+              return { ok: false, code: 'model_round_identity_conflict' };
+            }
+          }
+          if (current.settlement !== null) {
+            return { ok: false, code: 'model_round_settlement_conflict' };
+          }
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          modelRoundState: {
+            ...modelRoundState,
+            active: {
+              ...active,
+              claimRevision: current?.claimRevision ?? 1,
+              phase: 'prepared',
+              settlement: null,
+            },
+          },
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async claimActiveModelRound({ threadId, runId, claimId }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const modelRoundState = previous.modelRoundState;
+        if (modelRoundState === null) {
+          return { ok: false, code: 'model_round_unavailable' };
+        }
+        if (modelRoundState.active === null) {
+          return { ok: true, checkpoint: previous, changed: false };
+        }
+        if (modelRoundState.active.claimId === claimId) {
+          return { ok: true, checkpoint: previous, changed: false };
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          modelRoundState: {
+            ...modelRoundState,
+            active: {
+              ...modelRoundState.active,
+              claimId,
+              claimRevision: modelRoundState.active.claimRevision + 1,
+            },
+          },
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async markModelRoundPhase({
+      threadId,
+      runId,
+      claimId,
+      providerRequestIdentity,
+      phase,
+    }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const modelRoundState = previous.modelRoundState;
+        const active = modelRoundState?.active;
+        if (
+          modelRoundState === null ||
+          active === null ||
+          active === undefined
+        ) {
+          return { ok: false, code: 'model_round_unavailable' };
+        }
+        if (active.claimId !== claimId) {
+          return { ok: false, code: 'model_round_claim_conflict' };
+        }
+        if (active.providerRequestIdentity !== providerRequestIdentity) {
+          return { ok: false, code: 'model_round_identity_conflict' };
+        }
+        if (modelRoundPhaseOrder(active.phase) > modelRoundPhaseOrder(phase)) {
+          return { ok: true, checkpoint: previous, changed: false };
+        }
+        if (active.phase === phase) {
+          return { ok: true, checkpoint: previous, changed: false };
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          modelRoundState: {
+            ...modelRoundState,
+            active: { ...active, phase },
+          },
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async recordModelRoundSettlementCandidate({
+      threadId,
+      runId,
+      claimId,
+      logicalRequestIdentity,
+      providerRequestIdentity,
+      candidateDigest,
+      usage,
+    }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        if (
+          !isModelSettlementIdentity(logicalRequestIdentity) ||
+          !SHA256_ID_PATTERN.test(candidateDigest) ||
+          !isValidModelUsage(usage)
+        ) {
+          return { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const activeResolution = resolveActiveModelRoundMutation(previous, {
+          claimId,
+          logicalRequestIdentity,
+          providerRequestIdentity,
+        });
+        if (!activeResolution.ok) {
+          return activeResolution;
+        }
+        const { active, modelRoundState } = activeResolution;
+        if (active.phase !== 'terminal_observed') {
+          return { ok: false, code: 'model_round_phase_conflict' };
+        }
+        if (active.settlement !== null) {
+          return active.settlement.candidateDigest === candidateDigest &&
+            isSameModelUsage(active.settlement.usage, usage)
+            ? { ok: true, checkpoint: previous, changed: false }
+            : { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          modelRoundState: {
+            ...modelRoundState,
+            active: {
+              ...active,
+              settlement: {
+                candidateDigest,
+                usage: { ...usage },
+                phase: 'candidate_recorded',
+                resultDigest: null,
+                result: null,
+                disposition: null,
+                source: null,
+                committedAt: null,
+                continuationHistoryText: null,
+              },
+            },
+          },
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async beginModelRoundSettlementEffects({
+      threadId,
+      runId,
+      claimId,
+      logicalRequestIdentity,
+      candidateDigest,
+    }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        if (!SHA256_ID_PATTERN.test(candidateDigest)) {
+          return { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const activeResolution = resolveActiveModelRoundMutation(previous, {
+          claimId,
+          logicalRequestIdentity,
+        });
+        if (!activeResolution.ok) {
+          return activeResolution;
+        }
+        const { active, modelRoundState } = activeResolution;
+        const settlement = active.settlement;
+        if (
+          settlement === null ||
+          settlement.candidateDigest !== candidateDigest
+        ) {
+          return { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        if (settlement.phase !== 'candidate_recorded') {
+          return { ok: true, checkpoint: previous, changed: false };
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          modelRoundState: {
+            ...modelRoundState,
+            active: {
+              ...active,
+              settlement: { ...settlement, phase: 'effects_started' },
+            },
+          },
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async commitModelRoundSettlement({
+      threadId,
+      runId,
+      claimId,
+      logicalRequestIdentity,
+      candidateDigest,
+      resultDigest,
+      result,
+      disposition,
+      source,
+      continuationHistoryText,
+    }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        if (
+          !isModelSettlementIdentity(logicalRequestIdentity) ||
+          !SHA256_ID_PATTERN.test(candidateDigest) ||
+          !SHA256_ID_PATTERN.test(resultDigest) ||
+          !isJsonValue(result) ||
+          !isRunCheckpointModelSettlementSource(source) ||
+          (continuationHistoryText !== null &&
+            typeof continuationHistoryText !== 'string') ||
+          (disposition === 'terminal' && continuationHistoryText !== null)
+        ) {
+          return { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const activeResolution = resolveActiveModelRoundMutation(previous, {
+          claimId,
+          logicalRequestIdentity,
+        });
+        if (!activeResolution.ok) {
+          return activeResolution;
+        }
+        const { active, modelRoundState } = activeResolution;
+        const settlement = active.settlement;
+        if (
+          settlement === null ||
+          settlement.candidateDigest !== candidateDigest
+        ) {
+          return { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        if (settlement.phase === 'committed') {
+          return settlement.resultDigest === resultDigest &&
+            settlement.result !== null &&
+            isSameJsonValue(settlement.result, result) &&
+            settlement.disposition === disposition &&
+            settlement.source === source &&
+            settlement.continuationHistoryText === continuationHistoryText
+            ? { ok: true, checkpoint: previous, changed: false }
+            : { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        const settledUsage = addModelUsage(
+          modelRoundState.settledUsage,
+          settlement.usage,
+        );
+        if (settledUsage === null) {
+          return { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          modelRoundState: {
+            ...modelRoundState,
+            settledUsage,
+            active: {
+              ...active,
+              settlement: {
+                ...settlement,
+                phase: 'committed',
+                resultDigest,
+                result: structuredClone(result),
+                disposition,
+                source,
+                committedAt: now(),
+                continuationHistoryText,
+              },
+            },
+          },
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async completeModelRound({
+      threadId,
+      runId,
+      claimId,
+      logicalRequestIdentity,
+      providerRequestIdentity,
+    }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const activeResolution = resolveActiveModelRoundMutation(previous, {
+          claimId,
+          logicalRequestIdentity,
+          providerRequestIdentity,
+        });
+        if (!activeResolution.ok) {
+          return activeResolution;
+        }
+        const { active, modelRoundState } = activeResolution;
+        if (active.phase !== 'terminal_observed') {
+          return { ok: false, code: 'model_round_phase_conflict' };
+        }
+        if (
+          active.settlement?.phase !== 'committed' ||
+          active.settlement.disposition !== 'continue'
+        ) {
+          return { ok: false, code: 'model_round_settlement_conflict' };
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          modelRoundState: {
+            nextRound: active.round + 1,
+            active: null,
+            settledUsage: modelRoundState.settledUsage,
+            continuation:
+              active.settlement.continuationHistoryText === null
+                ? null
+                : {
+                    round: active.round,
+                    logicalRequestIdentity,
+                    historyText: active.settlement.continuationHistoryText,
+                  },
+          },
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
     async appendRunEvents({ threadId, runId, events }) {
       if (events.length === 0) {
         return;
@@ -880,13 +1436,38 @@ export function createRunCheckpointStore(args: {
             `run checkpoint still has tool invocations: ${runId}`,
           );
         }
+        const active = previous.modelRoundState?.active;
+        const activeSettlementIdentity =
+          active?.settlement?.phase === 'committed' &&
+          active.settlement.disposition === 'terminal'
+            ? active.logicalRequestIdentity
+            : null;
+        const modelSettlementIdentity =
+          terminal.modelSettlementIdentity ?? activeSettlementIdentity;
+        if (
+          terminal.event.type === 'done' &&
+          active !== null &&
+          active !== undefined &&
+          (activeSettlementIdentity === null ||
+            modelSettlementIdentity !== activeSettlementIdentity)
+        ) {
+          throw new Error(
+            `run terminal checkpoint lacks a committed model settlement: ${runId}`,
+          );
+        }
         const checkpoint: RunCheckpoint = {
           ...previous,
           revision: previous.revision + 1,
           status: 'terminal',
           applyingInterject: null,
           pendingInterjects: [],
-          terminal: { ...terminal, acknowledged: false },
+          terminal: {
+            ...terminal,
+            acknowledged: false,
+            ...(modelSettlementIdentity === null
+              ? {}
+              : { modelSettlementIdentity }),
+          },
           updatedAt: now(),
         };
         await writeCheckpoint(path, checkpoint);
@@ -952,11 +1533,18 @@ export async function deleteThreadRunCheckpoint(
 
 function isSameTerminalSnapshot(
   previous: RunCheckpointTerminalSnapshot,
-  next: Omit<RunCheckpointTerminalSnapshot, 'acknowledged'>,
+  next: Omit<
+    RunCheckpointTerminalSnapshot,
+    'acknowledged' | 'modelSettlementIdentity'
+  > & {
+    modelSettlementIdentity?: ModelSettlementIdentity;
+  },
 ): boolean {
   if (
     previous.eventCursor !== next.eventCursor ||
-    previous.event.type !== next.event.type
+    previous.event.type !== next.event.type ||
+    (next.modelSettlementIdentity !== undefined &&
+      previous.modelSettlementIdentity !== next.modelSettlementIdentity)
   ) {
     return false;
   }
@@ -1002,8 +1590,118 @@ function resolveRunMutationCheckpoint(
   return { ok: true, checkpoint };
 }
 
+function compareModelRoundAttempt(
+  current: RunCheckpointActiveModelRound,
+  next: Pick<
+    RunCheckpointActiveModelRound,
+    'modelRoundAttempt' | 'providerRequestAttempt'
+  >,
+): number {
+  return current.modelRoundAttempt === next.modelRoundAttempt
+    ? current.providerRequestAttempt - next.providerRequestAttempt
+    : current.modelRoundAttempt - next.modelRoundAttempt;
+}
+
+function isSamePreparedModelRound(
+  current: RunCheckpointActiveModelRound,
+  next: Omit<
+    RunCheckpointActiveModelRound,
+    'claimRevision' | 'phase' | 'settlement'
+  >,
+): boolean {
+  const {
+    claimRevision: _claimRevision,
+    phase: _phase,
+    settlement: _settlement,
+    ...prepared
+  } = current;
+  return isDeepStrictEqual(prepared, next);
+}
+
+function resolveActiveModelRoundMutation(
+  checkpoint: RunCheckpoint,
+  args: {
+    claimId: string;
+    logicalRequestIdentity: ModelSettlementIdentity;
+    providerRequestIdentity?: string;
+  },
+):
+  | {
+      ok: true;
+      modelRoundState: RunCheckpointModelRoundState;
+      active: RunCheckpointActiveModelRound;
+    }
+  | Extract<RunCheckpointModelRoundMutationResult, { ok: false }> {
+  if (!isModelSettlementIdentity(args.logicalRequestIdentity)) {
+    return { ok: false, code: 'model_round_identity_conflict' };
+  }
+  const modelRoundState = checkpoint.modelRoundState;
+  const active = modelRoundState?.active;
+  if (modelRoundState === null || active === null || active === undefined) {
+    return { ok: false, code: 'model_round_unavailable' };
+  }
+  if (active.claimId !== args.claimId) {
+    return { ok: false, code: 'model_round_claim_conflict' };
+  }
+  if (
+    active.logicalRequestIdentity !== args.logicalRequestIdentity ||
+    (args.providerRequestIdentity !== undefined &&
+      active.providerRequestIdentity !== args.providerRequestIdentity)
+  ) {
+    return { ok: false, code: 'model_round_identity_conflict' };
+  }
+  return { ok: true, modelRoundState, active };
+}
+
+function modelRoundPhaseOrder(phase: RunCheckpointModelRoundPhase): number {
+  switch (phase) {
+    case 'prepared':
+      return 0;
+    case 'streaming':
+      return 1;
+    case 'terminal_observed':
+      return 2;
+  }
+}
+
 function isSameJsonValue(left: JsonValue, right: JsonValue): boolean {
   return isDeepStrictEqual(left, right);
+}
+
+function isSameModelUsage(
+  left: RunCheckpointModelUsage,
+  right: RunCheckpointModelUsage,
+): boolean {
+  return (
+    left.inputTokens === right.inputTokens &&
+    left.outputTokens === right.outputTokens &&
+    left.cachedInputTokens === right.cachedInputTokens
+  );
+}
+
+function createEmptyModelUsage(): RunCheckpointModelUsage {
+  return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+}
+
+function isValidModelUsage(value: RunCheckpointModelUsage): boolean {
+  return Object.values(value).every(
+    (entry) => Number.isSafeInteger(entry) && entry >= 0,
+  );
+}
+
+function addModelUsage(
+  current: RunCheckpointModelUsage,
+  delta: RunCheckpointModelUsage,
+): RunCheckpointModelUsage | null {
+  if (!isValidModelUsage(current) || !isValidModelUsage(delta)) {
+    return null;
+  }
+  const next = {
+    inputTokens: current.inputTokens + delta.inputTokens,
+    outputTokens: current.outputTokens + delta.outputTokens,
+    cachedInputTokens: current.cachedInputTokens + delta.cachedInputTokens,
+  };
+  return isValidModelUsage(next) ? next : null;
 }
 
 function isSameExecuteResult(

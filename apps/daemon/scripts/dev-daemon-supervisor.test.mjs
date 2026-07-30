@@ -146,6 +146,10 @@ test('daemon development bundle resolves workspace packages from source', async 
         appRoot,
         'src/daemon/llm/provider/transport/responses-durable-request-host-main.ts',
       ),
+      'public-http-read-host': join(
+        appRoot,
+        'src/command-host/public-http-read-host-main.ts',
+      ),
       'daemon-lifecycle-worker': join(
         root,
         'packages/daemon-lifecycle/src/worker.ts',
@@ -190,6 +194,14 @@ test('daemon development bundle resolves workspace packages from source', async 
           root,
           'apps/daemon/src/daemon/agent/loop-implementation-admission.ts',
         ),
+      },
+    );
+    assert.deepEqual(
+      resolveWorkspacePackage({
+        path: '@geulbat/daemon/prompt-component-identity',
+      }),
+      {
+        path: join(root, 'apps/daemon/src/daemon/agent/loop-prompt.ts'),
       },
     );
     assert.deepEqual(

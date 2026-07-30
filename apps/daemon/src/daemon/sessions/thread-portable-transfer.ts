@@ -725,7 +725,7 @@ async function restoreMedia(args: {
 
 function mediaExtension(mediaRef: string): ThreadMediaExtension {
   if (!isThreadMediaRef(mediaRef)) {
-    throw new Error(`invalid thread media ref: ${mediaRef}`);
+    throw new Error(`invalid thread media ref: ${String(mediaRef)}`);
   }
   const extension = mediaRef.slice(mediaRef.lastIndexOf('.') + 1);
   if (

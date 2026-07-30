@@ -1,7 +1,9 @@
 import {
   ARTIFACT_START_PREFIX,
   createArtifactRefKey as createProtocolArtifactRefKey,
+  isArtifactRenderer as isProtocolArtifactRenderer,
   type ArtifactRef,
+  type ArtifactRenderer,
   type ThreadArtifactVersion,
 } from '@geulbat/protocol/artifacts';
 import {
@@ -37,7 +39,9 @@ import type {
   PlanRenderingStamp,
 } from '@geulbat/protocol/planning-workflow';
 import {
+  isModelSettlementIdentity as isProtocolModelSettlementIdentity,
   readArtifactRefsFromMetadata as readProtocolArtifactRefsFromMetadata,
+  type ModelSettlementIdentity,
   type ThreadMessageAttachment,
   type ThreadMessageMetadata,
 } from '@geulbat/protocol/thread-metadata';
@@ -61,6 +65,7 @@ export type {
   ApprovedPlanRef,
   BudgetProfile,
   GoalSnapshot,
+  ModelSettlementIdentity,
   PlanDraftV1,
   PlanModeDepth,
   PlanModeIntensity,
@@ -110,6 +115,18 @@ export function isAgentRunModelId(
   modelId: string,
 ): modelId is RunProviderTransitionRecovery['sourceModelId'] {
   return isProtocolRunModelId(modelId);
+}
+
+export function isAgentModelSettlementIdentity(
+  value: unknown,
+): value is ModelSettlementIdentity {
+  return isProtocolModelSettlementIdentity(value);
+}
+
+export function isAgentArtifactRenderer(
+  value: unknown,
+): value is ArtifactRenderer {
+  return isProtocolArtifactRenderer(value);
 }
 
 export const AGENT_ARTIFACT_START_PREFIX = ARTIFACT_START_PREFIX;

@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type {
   ProviderRuntimeStatusEventPayload,
@@ -46,6 +47,7 @@ interface AssistantTranscriptProps {
   activeArtifact: ThreadArtifactVersion | null;
   planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   streamError: string | null;
+  streamErrorCode?: ErrorCode | null;
   isRunning: boolean;
   // 실행 중 상태줄에 붙일 런 누적 토큰 사용량
   usageTotals?: RunUsageTotals | null;
@@ -66,6 +68,7 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
   activeArtifact,
   planningWorkflowSnapshot = null,
   streamError,
+  streamErrorCode = null,
   isRunning,
   usageTotals = null,
   providerRuntime = null,
@@ -182,6 +185,7 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
           activeArtifact={activeArtifact}
           planningWorkflowSnapshot={planningWorkflowSnapshot}
           streamError={streamError}
+          streamErrorCode={streamErrorCode}
           hasUnreadStreamContent={hasUnreadStreamContent}
           isRunning={isRunning}
           onStartArtifactRun={onStartArtifactRun}
@@ -203,7 +207,9 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
               className="transcript-retry-button"
               onClick={onRetryLastPrompt}
             >
-              ↻ 답변 다시 시도
+              {streamErrorCode === 'llm_provider_request_outcome_unknown'
+                ? '위험을 이해하고 이전 요청을 정리한 뒤 다시 시도'
+                : '↻ 답변 다시 시도'}
             </button>
           </div>
         ) : null}

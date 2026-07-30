@@ -3,6 +3,7 @@ import { isRecord } from '../../../lib/json.js';
 // ask_user 도구 호출을 선택지 카드 뷰로 좁힌다 — visualize처럼 렌더
 // 원본은 tool_call args가 정본이다.
 export const ASK_USER_TOOL_NAME = 'ask_user';
+export type AskUserPurpose = 'decision' | 'understanding_confirmation';
 
 interface AskUserCardOption {
   label: string;
@@ -10,6 +11,7 @@ interface AskUserCardOption {
 }
 
 export interface AskUserCardView {
+  purpose: AskUserPurpose;
   question: string;
   options: AskUserCardOption[];
 }
@@ -23,6 +25,15 @@ export function readAskUserCardViewFromToolArgs(
   const question =
     typeof args.question === 'string' ? args.question.trim() : '';
   if (question === '' || !Array.isArray(args.options)) {
+    return null;
+  }
+  const purpose =
+    args.purpose === undefined || args.purpose === 'decision'
+      ? 'decision'
+      : args.purpose === 'understanding_confirmation'
+        ? 'understanding_confirmation'
+        : null;
+  if (purpose === null) {
     return null;
   }
   const options: AskUserCardOption[] = [];
@@ -43,7 +54,7 @@ export function readAskUserCardViewFromToolArgs(
           : null,
     });
   }
-  return options.length > 0 ? { question, options } : null;
+  return options.length > 0 ? { purpose, question, options } : null;
 }
 
 export function readAskUserCardViewFromToolCallContent(

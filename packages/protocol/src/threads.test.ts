@@ -716,6 +716,29 @@ void test('isThreadDetailResponse rejects internal compaction entries', () => {
   );
 });
 
+void test('isThreadOpenResponse accepts run preferences without a cwd', () => {
+  assert.equal(
+    isThreadOpenResponse({
+      threadId: VALID_THREAD_ID as ThreadId,
+      snapshotVersion: '2026-04-11T00:00:00.000Z',
+      activeModelId: 'grok-4.5',
+      runPreferences: { permissionMode: 'basic' },
+      artifacts: [],
+      diagnostics: {
+        unlinkedPersistedArtifactCount: 0,
+        missingLinkedArtifactCount: 0,
+      },
+      subagentTerminalOutcomes: [],
+      messagePage: {
+        threadId: VALID_THREAD_ID as ThreadId,
+        messages: [],
+        olderBeforeEntryId: null,
+      },
+    }),
+    true,
+  );
+});
+
 void test('every declared thread contract field is actually validated', () => {
   assertEveryFieldIsValidated(
     'ThreadSummary',

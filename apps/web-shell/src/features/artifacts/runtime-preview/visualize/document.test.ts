@@ -36,7 +36,7 @@ void test('스크립트를 품은 HTML 조각은 점진 주입 없이 직접 심
     document,
     /<div class="geulbat-visualize-root"><div id="w"><\/div>/,
   );
-  assert.doesNotMatch(document, /prefers-reduced-motion/);
+  assert.doesNotMatch(document, /const reduceMotion/);
 });
 
 void test('title이 없으면 기본 제목을 escape해서 쓴다', () => {
@@ -55,4 +55,31 @@ void test('title의 마크업 문자는 escape된다', () => {
     title: '<script>x</script>',
   });
   assert.match(document, /<title>&lt;script&gt;x&lt;\/script&gt;<\/title>/);
+});
+
+void test('정규 계획 단계 상태를 data-plan-step-id 노드에 투영한다', () => {
+  const document = buildVisualizeWidgetDocument(
+    {
+      mode: 'svg',
+      code: [
+        '<svg viewBox="0 0 10 10">',
+        '<g data-plan-step-id="inspect"><rect /></g>',
+        '<g data-plan-step-id="verify"><rect /></g>',
+        '</svg>',
+      ].join(''),
+      title: '실행 계획',
+      planStepStates: [
+        { id: 'inspect', status: 'completed' },
+        { id: 'verify', status: 'in_progress' },
+      ],
+    },
+    { instant: true },
+  );
+
+  assert.match(document, /data-plan-status/);
+  assert.match(document, /data-plan-binding-state/);
+  assert.match(document, /MutationObserver/);
+  assert.match(document, /"inspect","status":"completed"/);
+  assert.match(document, /"verify","status":"in_progress"/);
+  assert.match(document, /geulbat-plan-step-pulse/);
 });

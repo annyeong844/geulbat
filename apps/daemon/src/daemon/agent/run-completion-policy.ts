@@ -7,6 +7,11 @@ import type { RunExecutionAgentBindings } from '../sessions/run-execution-lifecy
 import type { PlanningWorkflowStore } from '../sessions/planning-workflow-store.js';
 import type { GoalStore } from '../sessions/goal-store.js';
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
+import type {
+  BackgroundChildResult,
+  ChildRunTerminalSnapshot,
+} from '../subagent-runtime-contracts.js';
+import { isAgentChildTerminalState } from '../subagent-runtime-contracts.js';
 import {
   closeInterjectBuffer,
   hasPendingInterject,
@@ -51,6 +56,10 @@ interface CreateAgentRunCompletionPolicyArgs extends RunExecutionAgentBindings {
   backgroundNotifications: Pick<
     AgentRuntimeServices['backgroundNotifications'],
     'readThreadBackgroundResults'
+  >;
+  childRuns: Pick<
+    AgentRuntimeServices['childRuns'],
+    'getRetainedChildRunsByOwnerThread'
   >;
   emit: AgentEventEmitter;
   observeCompletionGap?: (
@@ -273,44 +282,19 @@ export function createAgentRunCompletionPolicy(
     source: TerminalCandidateSource,
     result: AgentResult,
   ): AgentLoopTerminalCandidateDecision | undefined {
+    let notificationReadFailure:
+      | Extract<
+          AgentLoopTerminalCandidateDecision,
+          { kind: 'verification_unavailable' }
+        >
+      | undefined;
+    let pendingResults: BackgroundChildResult[] = [];
     try {
-      const pendingResults = args.backgroundNotifications
+      pendingResults = args.backgroundNotifications
         .readThreadBackgroundResults(args.threadId)
         .filter((entry) => entry.parentRunId === args.runId);
-      if (pendingResults.length === 0) {
-        return undefined;
-      }
-      previousCompletionGap = undefined;
-      const continuation = JSON.stringify({
-        kind: 'pending_child_terminal_updates',
-        childRunIds: pendingResults.map((entry) => entry.childRunId),
-        outcomes: pendingResults.map((entry) => ({
-          childRunId: entry.childRunId,
-          terminalState: entry.terminalState,
-          reason: entry.reason ?? null,
-        })),
-        requiredNextAction:
-          'Call agent_wait with these childRunIds before finalizing, inspect every terminal outcome, and decide whether the promised work is still complete.',
-        continuationOptions: {
-          daemonInterrupted:
-            'Use agent_retry only when the same interrupted task is still required.',
-          preservedChildContext:
-            'Use agent_send_input when continuing the same terminal child thread is useful.',
-          newIndependentWork:
-            'A terminal child does not disable agent_spawn; launch a fresh child when new independent work remains.',
-          noLongerNeeded:
-            'If no further child work is needed, continue locally after accounting for the terminal result.',
-        },
-      });
-      return {
-        kind: 'continue',
-        historyText:
-          source === 'structured_output'
-            ? `${describeAgentResultForTextSurface(result)}\n${continuation}`
-            : continuation,
-      };
     } catch (error: unknown) {
-      return recordTerminalVerificationFailure({
+      notificationReadFailure = recordTerminalVerificationFailure({
         operation: 'subagent_terminal_read',
         error,
         userMessage:
@@ -319,6 +303,74 @@ export function createAgentRunCompletionPolicy(
         threadId: args.threadId,
       });
     }
+
+    const retainedTerminalChildren = args.childRuns
+      .getRetainedChildRunsByOwnerThread(args.threadId)
+      .filter(
+        (child): child is ChildRunTerminalSnapshot =>
+          child.parentRunId === args.runId &&
+          isAgentChildTerminalState(child.status),
+      );
+    if (pendingResults.length === 0 && retainedTerminalChildren.length === 0) {
+      return notificationReadFailure;
+    }
+
+    previousCompletionGap = undefined;
+    const outcomeByChildRunId = new Map<
+      RunId,
+      {
+        childRunId: RunId;
+        terminalState: ChildRunTerminalSnapshot['status'];
+        reason: ChildRunTerminalSnapshot['reason'];
+        sources: string[];
+      }
+    >();
+    for (const notification of pendingResults) {
+      outcomeByChildRunId.set(notification.childRunId, {
+        childRunId: notification.childRunId,
+        terminalState: notification.terminalState,
+        reason: notification.reason ?? null,
+        sources: ['addressed_notification'],
+      });
+    }
+    for (const registryChild of retainedTerminalChildren) {
+      const notificationOutcome = outcomeByChildRunId.get(
+        registryChild.childRunId,
+      );
+      outcomeByChildRunId.set(registryChild.childRunId, {
+        childRunId: registryChild.childRunId,
+        terminalState:
+          notificationOutcome?.terminalState ?? registryChild.status,
+        reason: notificationOutcome?.reason ?? registryChild.reason,
+        sources: [...(notificationOutcome?.sources ?? []), 'child_registry'],
+      });
+    }
+    const outcomes = [...outcomeByChildRunId.values()];
+    const continuation = JSON.stringify({
+      kind: 'pending_child_terminal_updates',
+      childRunIds: outcomes.map((entry) => entry.childRunId),
+      outcomes,
+      notificationReadUnavailable: notificationReadFailure !== undefined,
+      requiredNextAction:
+        'Call agent_wait with these childRunIds before finalizing, inspect every terminal outcome, and decide whether the promised work is still complete.',
+      continuationOptions: {
+        daemonInterrupted:
+          'Use agent_retry only when the same interrupted task is still required.',
+        preservedChildContext:
+          'Use agent_send_input when continuing the same terminal child thread is useful.',
+        newIndependentWork:
+          'A terminal child does not disable agent_spawn; launch a fresh child when new independent work remains.',
+        noLongerNeeded:
+          'If no further child work is needed, continue locally after accounting for the terminal result.',
+      },
+    });
+    return {
+      kind: 'continue',
+      historyText:
+        source === 'structured_output'
+          ? `${describeAgentResultForTextSurface(result)}\n${continuation}`
+          : continuation,
+    };
   }
 
   function continueForPendingRuntimeWork(
@@ -404,7 +456,9 @@ export function createAgentRunCompletionPolicy(
             const incomplete = JSON.stringify({
               kind: 'planning_workflow_incomplete',
               requiredNextAction:
-                'call ask_user for one consequential user decision, or call propose_plan with the canonical draft',
+                snapshot.depth === 'deep'
+                  ? 'call ask_user for the next consequential decision or the final understanding_confirmation checkpoint; call propose_plan only after the user confirms that checkpoint'
+                  : 'call ask_user for one consequential user decision, or call propose_plan with the canonical draft',
               finalProseDoesNotCompletePlanning: true,
             });
             return {

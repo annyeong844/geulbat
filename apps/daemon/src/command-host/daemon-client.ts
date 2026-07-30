@@ -65,7 +65,7 @@ function unreadableWorkerResponseResult(method: string): {
 interface CommandHostClientOptions {
   config: CommandSessionHostConfig;
   /** 워커 엔트리 실행 스펙. 기본은 빌드 산출물 경로다. */
-  workerCommand?: { execPath: string; args: string[] };
+  workerCommand?: { execPath: string; args: readonly string[] };
 }
 
 /**
@@ -265,6 +265,17 @@ export function createCommandHostClient(
             'command-host worker does not support non-persisted initial stdin on start.',
         };
       }
+      if (
+        args.initialStdin instanceof Uint8Array &&
+        !link.capabilities.rawInitialStdinOnStart
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'spawn_failed',
+          message:
+            'command-host worker does not support exact-byte initial stdin on start.',
+        };
+      }
       const env: Record<string, string> = {};
       for (const [key, value] of Object.entries(args.env)) {
         if (value !== undefined) {
@@ -286,7 +297,13 @@ export function createCommandHostClient(
         stdinMode: args.stdinMode,
         ...(args.initialStdin === undefined
           ? {}
-          : { initialStdin: args.initialStdin }),
+          : typeof args.initialStdin === 'string'
+            ? { initialStdin: args.initialStdin }
+            : {
+                initialStdinBase64: Buffer.from(args.initialStdin).toString(
+                  'base64',
+                ),
+              }),
         ...(args.owner === undefined ? {} : { owner: args.owner }),
         ...(args.streamMode === undefined
           ? {}
@@ -347,6 +364,17 @@ export function createCommandHostClient(
           message: 'command-host worker is not connected.',
         };
       }
+      if (
+        args.requiresOutputRef === true &&
+        !link.capabilities.rawOutputPages
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'output_store_failed',
+          message:
+            'command-host worker does not support raw output reference claims.',
+        };
+      }
       try {
         const answered = await link.request(
           COMMAND_HOST_METHODS.waitInitial,
@@ -355,6 +383,9 @@ export function createCommandHostClient(
             ...(args.yieldTimeMs === undefined
               ? {}
               : { yieldTimeMs: args.yieldTimeMs }),
+            ...(args.requiresOutputRef === undefined
+              ? {}
+              : { requiresOutputRef: args.requiresOutputRef }),
           },
           args.signal,
         );
@@ -395,6 +426,16 @@ export function createCommandHostClient(
           reasonCode: 'invalid_args',
           message:
             'command-host worker does not support deferred lossless output release.',
+        };
+      }
+      if (
+        args.page?.encoding === 'base64' &&
+        !link.capabilities.rawOutputPages
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'invalid_args',
+          message: 'command-host worker does not support raw output pages.',
         };
       }
       // durable 호출자가 체크포인트의 operation을 주면 그대로 보존하고,

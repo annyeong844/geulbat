@@ -4,7 +4,10 @@ import {
   createProviderReplayScopeId,
 } from '../provider-replay-scope.js';
 import type { HistoryItem, ProviderUsageTelemetry } from '../wire/types.js';
-import { streamQwenChatCompletions } from './chat-completions-stream.js';
+import {
+  streamQwenChatCompletions,
+  type QwenChatCompletionsInput,
+} from './chat-completions-stream.js';
 import {
   loadQwenTokenPlanConfig,
   QWEN_TOKEN_PLAN_PROVIDER_ID,
@@ -23,6 +26,8 @@ const QWEN_SUMMARY_REQUEST =
 export interface QwenHistorySummaryInput {
   historyPrefix: readonly HistoryItem[];
   model: string;
+  providerSessionId: string;
+  providerRequestSessions?: QwenChatCompletionsInput['providerRequestSessions'];
   providerReplayScopeId?: ProviderReplayScopeId;
   signal?: AbortSignal;
 }
@@ -75,6 +80,11 @@ export async function summarizeQwenHistory(
       { kind: 'user', text: QWEN_SUMMARY_REQUEST },
     ],
     providerReplayScopeId,
+    providerSessionId: `qwen-summary:${input.providerSessionId}`,
+    requestAttempt: 0,
+    ...(input.providerRequestSessions === undefined
+      ? {}
+      : { providerRequestSessions: input.providerRequestSessions }),
     instructions: QWEN_SUMMARY_INSTRUCTIONS,
     enableThinking: policy.summaryThinkingEnabled,
     maxTokens: policy.summaryMaxOutputTokens,

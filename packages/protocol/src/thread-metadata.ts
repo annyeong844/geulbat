@@ -7,8 +7,10 @@ import {
 import { isRecord, isString } from './wire-value-guards.js';
 
 const THREAD_MESSAGE_PHASES = ['commentary', 'final_answer'] as const;
+const MODEL_SETTLEMENT_ID_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 
 type ThreadMessagePhase = (typeof THREAD_MESSAGE_PHASES)[number];
+export type ModelSettlementIdentity = `sha256:${string}`;
 
 // 사용자 메시지에 실린 업로드 첨부 — 바이트는 스레드 첨부 스토어에 있고
 // 여기에는 참조와 표시용 정보만 남는다. kind는 모델 전달 형태를 뜻한다
@@ -37,6 +39,7 @@ interface UserThreadMessageMetadata {
   artifactRefs?: never;
   activeArtifactRef?: never;
   planStamp?: never;
+  modelSettlementIdentity?: never;
 }
 
 interface CommentaryThreadMessageMetadata {
@@ -50,6 +53,7 @@ interface CommentaryThreadMessageMetadata {
   artifactRefs?: never;
   activeArtifactRef?: never;
   planStamp?: never;
+  modelSettlementIdentity?: never;
 }
 
 export interface FinalAnswerThreadMessageMetadata {
@@ -59,6 +63,7 @@ export interface FinalAnswerThreadMessageMetadata {
   artifactRefs?: ArtifactRef[];
   activeArtifactRef?: ArtifactRef;
   planStamp?: PlanRenderingStamp;
+  modelSettlementIdentity?: ModelSettlementIdentity;
   source?: never;
   hiddenPrompt?: never;
   silent?: never;
@@ -77,6 +82,7 @@ interface InterjectThreadMessageMetadata {
   artifactRefs?: never;
   activeArtifactRef?: never;
   planStamp?: never;
+  modelSettlementIdentity?: never;
 }
 
 export type ThreadMessageMetadata =
@@ -103,6 +109,7 @@ const FINAL_ANSWER_METADATA_KEYS = [
   'artifactRefs',
   'activeArtifactRef',
   'planStamp',
+  'modelSettlementIdentity',
 ] as const;
 const INTERJECT_METADATA_KEYS = [
   'source',
@@ -170,8 +177,16 @@ export function isThreadMessageMetadata(
     isOptionalString(value.sourceFile) &&
     isOptionalArtifactRefs(value.artifactRefs) &&
     isOptionalArtifactRef(value.activeArtifactRef) &&
-    (value.planStamp === undefined || isApprovedPlanRef(value.planStamp))
+    (value.planStamp === undefined || isApprovedPlanRef(value.planStamp)) &&
+    (value.modelSettlementIdentity === undefined ||
+      isModelSettlementIdentity(value.modelSettlementIdentity))
   );
+}
+
+export function isModelSettlementIdentity(
+  value: unknown,
+): value is ModelSettlementIdentity {
+  return typeof value === 'string' && MODEL_SETTLEMENT_ID_PATTERN.test(value);
 }
 
 export function readArtifactRefsFromMetadata(

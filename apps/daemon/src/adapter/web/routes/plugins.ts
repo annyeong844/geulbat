@@ -40,11 +40,14 @@ export function createPluginRoutes(args: {
     res.status(200).json(response);
   });
 
-  router.get('/api/plugins/marketplaces', (_req, res) => {
-    const response: PluginMarketplaceListResponse = args.marketplaces.list(
-      args.plugins.listPlugins(),
-    );
-    res.status(200).json(response);
+  router.get('/api/plugins/marketplaces', async (_req, res) => {
+    await respondWithPluginOperation(res, async () => {
+      await args.marketplaces.initialize();
+      const response: PluginMarketplaceListResponse = args.marketplaces.list(
+        args.plugins.listPlugins(),
+      );
+      res.status(200).json(response);
+    });
   });
 
   router.post('/api/plugins/marketplaces/official', async (req, res) => {
@@ -57,6 +60,7 @@ export function createPluginRoutes(args: {
       return;
     }
     await respondWithPluginOperation(res, async () => {
+      await args.marketplaces.initialize();
       const response: PluginMarketplaceMutationResponse = {
         marketplace: await args.marketplaces.ensureOfficialMarketplace(),
       };
@@ -71,6 +75,7 @@ export function createPluginRoutes(args: {
       return;
     }
     await respondWithPluginOperation(res, async () => {
+      await args.marketplaces.initialize();
       const response: PluginMarketplaceMutationResponse = {
         marketplace: await args.marketplaces.add(request),
       };
@@ -88,6 +93,7 @@ export function createPluginRoutes(args: {
         return;
       }
       await respondWithPluginOperation(res, async () => {
+        await args.marketplaces.initialize();
         const icon = await args.marketplaces.resolveEntryIcon(
           marketplaceId,
           entryId,
@@ -121,6 +127,7 @@ export function createPluginRoutes(args: {
       return;
     }
     await respondWithPluginOperation(res, async () => {
+      await args.marketplaces.initialize();
       const candidate =
         await args.marketplaces.resolveInstallCandidate(request);
       const response: PluginMutationResponse = {
@@ -139,6 +146,7 @@ export function createPluginRoutes(args: {
         return;
       }
       await respondWithPluginOperation(res, async () => {
+        await args.marketplaces.initialize();
         await args.marketplaces.remove(marketplaceId);
         const response: PluginMarketplaceDeleteResponse = {
           removedMarketplaceId: marketplaceId,

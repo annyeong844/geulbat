@@ -10,6 +10,7 @@ import {
   isRunEventAckEnvelope,
   isRunInterjectEnvelope,
   isRunInterjectFlushEnvelope,
+  isRunProviderRequestRecoveryMessage,
   isRunToolEnvelope,
   type RunControlMessage,
 } from './run-channel.js';
@@ -92,6 +93,56 @@ void test('client authorization and mutation requests reject unknown intent fiel
   );
 });
 
+void test('provider outcome-unknown recovery requires an exact duplicate-risk acknowledgement', () => {
+  const message = {
+    type: 'run.provider_request.recover',
+    requestId: 'recover-1',
+    request: {
+      threadId: '123e4567-e89b-42d3-a456-426614174020',
+      acknowledgePossibleDuplicateProviderWork: true,
+    },
+  };
+
+  assert.equal(isRunProviderRequestRecoveryMessage(message), true);
+  assert.equal(
+    isRunProviderRequestRecoveryMessage({
+      ...message,
+      request: {
+        ...message.request,
+        acknowledgePossibleDuplicateProviderWork: false,
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isRunProviderRequestRecoveryMessage({
+      ...message,
+      request: { ...message.request, force: true },
+    }),
+    false,
+  );
+  assert.equal(
+    isRunChannelServerMessage({
+      type: 'run.control',
+      requestId: 'recover-1',
+      action: 'run.provider_request.recover',
+      ok: true,
+      disposition: 'abandoned',
+    }),
+    true,
+  );
+  assert.equal(
+    isRunChannelServerMessage({
+      type: 'run.control',
+      requestId: 'recover-1',
+      action: 'run.provider_request.recover',
+      ok: true,
+      disposition: 'forced',
+    }),
+    false,
+  );
+});
+
 void test('run.auth.ok requires the host-issued computer session identity', () => {
   assert.equal(
     isRunChannelServerMessage({
@@ -150,6 +201,33 @@ void test('run.tool.output.delta validates live command output without a replay 
       ...message,
       payload: { ...message.payload, text: 1 },
     }),
+    false,
+  );
+});
+
+void test('socket-local run events explicitly opt out of the durable replay cursor', () => {
+  const message = {
+    type: 'run.event',
+    event: {
+      runId: '123e4567-e89b-42d3-a456-426614174001',
+      threadId: '123e4567-e89b-42d3-a456-426614174002',
+      seq: 0,
+      ts: '2026-07-30T00:00:00.000Z',
+      type: 'run_ack',
+      payload: {
+        runId: '123e4567-e89b-42d3-a456-426614174001',
+        threadId: '123e4567-e89b-42d3-a456-426614174002',
+      },
+    },
+  };
+
+  assert.equal(isRunChannelServerMessage(message), true);
+  assert.equal(
+    isRunChannelServerMessage({ ...message, runEventCursor: false }),
+    true,
+  );
+  assert.equal(
+    isRunChannelServerMessage({ ...message, runEventCursor: true }),
     false,
   );
 });
@@ -259,6 +337,13 @@ void test('run.control accepts every declared action shape', () => {
       requestId: 'approve-1',
       action: 'run.approve',
       ok: true,
+    },
+    'run.provider_request.recover': {
+      type: 'run.control',
+      requestId: 'provider-recovery-1',
+      action: 'run.provider_request.recover',
+      ok: true,
+      disposition: 'abandoned',
     },
     'plan.command': {
       type: 'run.control',

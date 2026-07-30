@@ -196,6 +196,7 @@ export function useComputerFiles(options?: {
     useState<ConflictStaleWriteError | null>(null);
   const [saving, setSaving] = useState(false);
   const [openingFile, setOpeningFile] = useState(false);
+  const [mutationGeneration, setMutationGeneration] = useState(0);
   const openRequestSeqRef = useRef(0);
   const [editorError, setEditorError] = useState<string | null>(null);
 
@@ -381,6 +382,7 @@ export function useComputerFiles(options?: {
         isDirty: false,
         lastSavedAt: Date.now(),
       });
+      setMutationGeneration((current) => current + 1);
     } catch (err: unknown) {
       if (err instanceof FileSaveConflictError) {
         setSaveConflict(err.conflict);
@@ -418,6 +420,7 @@ export function useComputerFiles(options?: {
         });
         setSaveConflict(null);
         setEditorError(null);
+        setMutationGeneration((current) => current + 1);
         return true;
       } catch (err: unknown) {
         reportTreeError({
@@ -450,6 +453,7 @@ export function useComputerFiles(options?: {
           remapManagedPath(path, destination);
         }
         await loadTree();
+        setMutationGeneration((current) => current + 1);
         return true;
       } catch (err: unknown) {
         reportTreeError({
@@ -572,6 +576,7 @@ export function useComputerFiles(options?: {
         lastSavedAt: Date.now(),
       });
       setSaveConflict(null);
+      setMutationGeneration((current) => current + 1);
     } catch (err: unknown) {
       setEditorError(
         reportComputerFileError({
@@ -607,6 +612,7 @@ export function useComputerFiles(options?: {
     saving,
     openingFile,
     lastSavedAt: activeTextBuffer?.lastSavedAt ?? null,
+    mutationGeneration,
     openFiles,
     loadTree,
     loadSubtree,

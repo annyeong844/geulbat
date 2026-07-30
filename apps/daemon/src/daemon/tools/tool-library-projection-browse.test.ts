@@ -46,6 +46,7 @@ void test('file tools browse the Home-owned geulbat-sdk projection independently
       computerFileRoot: browsingRoot,
       stateRoot,
       threadId,
+      workingDirectory: '',
       runtimeServices: daemonContext,
       toolLibraryProjectionIdentity: {
         sdkVersion: projection.pin.sdkVersion,

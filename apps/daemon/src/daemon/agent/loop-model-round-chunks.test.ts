@@ -121,17 +121,21 @@ void test('consumeModelRoundChunks suppresses artifact-only prefix deltas when a
 
 void test('consumeModelRoundChunks reports retry-disabling semantic output for stream errors after text', async () => {
   const events: AgentEvent[] = [];
+  const providerErrorChunk = Object.assign(
+    {
+      type: 'error' as const,
+      code: 'llm_rate_limited',
+      message: 'rate limited after output',
+    },
+    { retryAfterMs: 2_500 },
+  );
 
   const result = await consumeModelRoundChunks({
     chunks: chunks([
       { type: 'text_delta', text: 'par' },
       { type: 'text_delta', text: 't' },
       { type: 'text_delta', text: 'ial' },
-      {
-        type: 'error',
-        code: 'llm_rate_limited',
-        message: 'rate limited after output',
-      },
+      providerErrorChunk,
     ]),
     signal: undefined,
     emit: makeEmitter(events),
@@ -147,6 +151,12 @@ void test('consumeModelRoundChunks reports retry-disabling semantic output for s
   assert.equal(
     result.kind === 'stream_error' ? result.sawSemanticChunk : undefined,
     true,
+  );
+  assert.equal(
+    result.kind === 'stream_error'
+      ? Reflect.get(result, 'retryAfterMs')
+      : undefined,
+    2_500,
   );
 });
 

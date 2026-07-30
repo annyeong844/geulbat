@@ -229,6 +229,30 @@ export async function inspectMarketplaceRepository(args: {
   return { source, entries, diagnostics, localEntryRoots, iconAssets };
 }
 
+export async function resolveMarketplaceLocalEntryRoot(args: {
+  repositoryRoot: string;
+  entryId: string;
+}): Promise<string | null> {
+  if (!PLUGIN_NAME_PATTERN.test(args.entryId)) {
+    return null;
+  }
+  const marketplace = await readMarketplaceDocument(args.repositoryRoot);
+  const rawEntry = marketplace.plugins.find(
+    (candidate) => readEntryName(candidate) === args.entryId,
+  );
+  if (rawEntry === undefined || readEntrySourceKind(rawEntry) !== 'local') {
+    return null;
+  }
+  const relativePath = readLocalEntryPath(rawEntry);
+  if (relativePath === null) {
+    return null;
+  }
+  return await checkNoSymlinkPathSegments(
+    args.repositoryRoot,
+    join(args.repositoryRoot, ...relativePath.split('/').filter(Boolean)),
+  );
+}
+
 async function readMarketplaceDocument(
   repositoryRoot: string,
 ): Promise<MarketplaceDocument> {

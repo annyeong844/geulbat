@@ -101,6 +101,7 @@ void test('selectVisibleRunState keeps an acknowledged new-thread run visible be
   });
   state = reduceRunSessionState(state, {
     type: 'approval_requested',
+    runId: RUN_ID,
     threadId: THREAD_ID_VALUE,
     pendingApproval,
   });

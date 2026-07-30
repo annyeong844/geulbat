@@ -5,16 +5,191 @@ import type {
   PlanningWorkflowSnapshot,
   PlanWorkflowCommand,
 } from '@geulbat/protocol/planning-workflow';
+import type { ThreadMessage } from '@geulbat/protocol/threads';
+import {
+  readAskUserCardViewFromToolCallContent,
+  type AskUserPurpose,
+} from '../ask-user/ask-user-card-view.js';
 import {
   VisualizeWidget,
   type WidgetToolRequestHandler,
 } from '../visualize/visualize-widget.js';
+import type { VisualizePlanStepState } from '../../artifacts/runtime-preview/visualize/document.js';
 import type { VisualizeWidgetView } from '../visualize/visualize-widget-view.js';
+import type { RunPlanStep } from './run-plan.js';
 
 export interface AssistantPlanningWorkflow {
   snapshot: PlanningWorkflowSnapshot;
   busy: boolean;
   onCommand: (command: PlanWorkflowCommand) => Promise<void>;
+}
+
+export interface PlanningInterviewDecision {
+  purpose: AskUserPurpose;
+  question: string;
+  answer: string;
+}
+
+export function resolvePlanningInterviewDecisions(
+  messages: readonly ThreadMessage[],
+  workflowCreatedAt: string,
+): PlanningInterviewDecision[] {
+  const decisions: PlanningInterviewDecision[] = [];
+  let pendingQuestion: {
+    purpose: AskUserPurpose;
+    question: string;
+  } | null = null;
+
+  for (const message of messages) {
+    if (message.timestamp < workflowCreatedAt) {
+      continue;
+    }
+    if (message.role === 'tool_call') {
+      const view = readAskUserCardViewFromToolCallContent(message.content);
+      if (view !== null) {
+        pendingQuestion = {
+          purpose: view.purpose,
+          question: view.question,
+        };
+      }
+      continue;
+    }
+    if (message.role !== 'user' || pendingQuestion === null) {
+      continue;
+    }
+    const answer = message.content.trim();
+    if (answer !== '') {
+      decisions.push({
+        purpose: pendingQuestion.purpose,
+        question: pendingQuestion.question,
+        answer,
+      });
+      pendingQuestion = null;
+    }
+  }
+
+  return decisions;
+}
+
+interface PlanningRevisionChange {
+  kind: 'added' | 'removed' | 'changed';
+  label: string;
+}
+
+function resolvePlanningRevisionSummary(
+  previous: PlanDraftV1,
+  current: PlanDraftV1,
+): PlanningRevisionChange[] {
+  const changes: PlanningRevisionChange[] = [];
+  if (previous.outcome !== current.outcome) {
+    changes.push({
+      kind: 'changed',
+      label: `목표: ${previous.outcome} → ${current.outcome}`,
+    });
+  }
+
+  const previousSteps = new Map(previous.steps.map((step) => [step.id, step]));
+  const currentSteps = new Map(current.steps.map((step) => [step.id, step]));
+  for (const step of current.steps) {
+    const prior = previousSteps.get(step.id);
+    if (prior === undefined) {
+      changes.push({ kind: 'added', label: `단계 추가: ${step.text}` });
+    } else if (
+      prior.text !== step.text ||
+      prior.acceptanceCriteria.length !== step.acceptanceCriteria.length ||
+      prior.acceptanceCriteria.some(
+        (criterion, index) => step.acceptanceCriteria[index] !== criterion,
+      )
+    ) {
+      changes.push({ kind: 'changed', label: `단계 수정: ${step.text}` });
+    }
+  }
+  for (const step of previous.steps) {
+    if (!currentSteps.has(step.id)) {
+      changes.push({ kind: 'removed', label: `단계 제외: ${step.text}` });
+    }
+  }
+
+  const listChanges = (
+    before: readonly string[],
+    after: readonly string[],
+    labels: { added: string; removed: string },
+  ) => {
+    const beforeSet = new Set(before);
+    const afterSet = new Set(after);
+    for (const value of after) {
+      if (!beforeSet.has(value)) {
+        changes.push({ kind: 'added', label: `${labels.added}: ${value}` });
+      }
+    }
+    for (const value of before) {
+      if (!afterSet.has(value)) {
+        changes.push({ kind: 'removed', label: `${labels.removed}: ${value}` });
+      }
+    }
+  };
+
+  listChanges(
+    previous.decisions.map(
+      (decision) => `${decision.settledBy}:${decision.text}`,
+    ),
+    current.decisions.map(
+      (decision) => `${decision.settledBy}:${decision.text}`,
+    ),
+    { added: '선택 추가', removed: '선택 제외' },
+  );
+  listChanges(previous.assumptions, current.assumptions, {
+    added: '가정 추가',
+    removed: '가정 제외',
+  });
+  listChanges(previous.openQuestions, current.openQuestions, {
+    added: '열린 질문 추가',
+    removed: '열린 질문 해결',
+  });
+
+  return changes.map((change) => ({
+    ...change,
+    label: change.label.replace(
+      /^(선택 (?:추가|제외)): (?:user|agent):/u,
+      '$1: ',
+    ),
+  }));
+}
+
+function isVisualizationBoundToDraft(
+  visualization: VisualizeWidgetView,
+  draft: PlanDraftV1,
+): boolean {
+  return (
+    visualization.planStepIds !== undefined &&
+    visualization.planStepIds.length === draft.steps.length &&
+    visualization.planStepIds.every(
+      (stepId, index) => stepId === draft.steps[index]?.id,
+    )
+  );
+}
+
+function resolveVisualPlanStepStates(
+  draft: PlanDraftV1,
+  workflowState: PlanningWorkflowSnapshot['state'],
+  executionPlan: readonly RunPlanStep[] | null,
+): VisualizePlanStepState[] {
+  const executionStatuses = new Map(
+    (executionPlan ?? []).flatMap((step) =>
+      step.id === undefined ? [] : [[step.id, step.status] as const],
+    ),
+  );
+  return draft.steps.map((step) => {
+    const executionStatus = executionStatuses.get(step.id) ?? 'pending';
+    const status: VisualizePlanStepState['status'] =
+      workflowState === 'completed'
+        ? 'completed'
+        : workflowState === 'execution_failed' &&
+            executionStatus !== 'completed'
+          ? 'failed'
+          : executionStatus;
+    return { id: step.id, status };
+  });
 }
 
 function PlanningWorkflowDismissIcon() {
@@ -88,20 +263,86 @@ function resolvePlanCardTitle(
   return title || '계획을 검토해 주세요';
 }
 
+function PlanningWorkflowVisualPreparing({
+  decisionCount,
+  stepCount,
+  outcome,
+  busy,
+}: {
+  decisionCount: number;
+  stepCount: number;
+  outcome: string;
+  busy: boolean;
+}) {
+  return (
+    <section
+      className={`planning-workflow-visual-preparing${busy ? ' is-busy' : ''}`}
+      role="status"
+      aria-label="계획 관계도 준비 중"
+    >
+      <header>
+        <span aria-hidden="true">✦</span>
+        <strong>결정에서 목표까지 연결하는 중</strong>
+      </header>
+      <div className="planning-workflow-visual-preparing-rail">
+        <div className="planning-workflow-visual-preparing-node decisions">
+          <span>확정한 선택</span>
+          <strong>{decisionCount}개</strong>
+        </div>
+        <span
+          className="planning-workflow-visual-preparing-connector"
+          aria-hidden="true"
+        >
+          →
+        </span>
+        <div className="planning-workflow-visual-preparing-node steps">
+          <span>실행 단계</span>
+          <strong>{stepCount}개</strong>
+        </div>
+        <span
+          className="planning-workflow-visual-preparing-connector"
+          aria-hidden="true"
+        >
+          →
+        </span>
+        <div className="planning-workflow-visual-preparing-node outcome">
+          <span>도달할 목표</span>
+          <strong>{outcome}</strong>
+        </div>
+      </div>
+      <p>
+        {busy
+          ? '정규 계획의 실제 내용을 먼저 보여드리고, 완성된 관계도로 곧 교체합니다.'
+          : '정규 계획은 그대로 검토할 수 있어요. 풍부한 관계도는 다시 요청할 수 있습니다.'}
+      </p>
+    </section>
+  );
+}
+
 export function PlanningWorkflowCard({
   workflow,
-  visualization = null,
+  visualization: visualizationInput = null,
+  executionPlan = null,
+  interviewDecisions = [],
   onWidgetPrompt,
   onWidgetToolRequest,
   onDismiss,
 }: {
   workflow: AssistantPlanningWorkflow;
   visualization?: VisualizeWidgetView | null;
+  executionPlan?: readonly RunPlanStep[] | null;
+  interviewDecisions?: readonly PlanningInterviewDecision[];
   onWidgetPrompt?: (prompt: string) => Promise<void> | void;
   onWidgetToolRequest?: WidgetToolRequestHandler;
   onDismiss?: () => void;
 }) {
   const { snapshot } = workflow;
+  const visualization =
+    visualizationInput !== null &&
+    snapshot.state !== 'collecting' &&
+    isVisualizationBoundToDraft(visualizationInput, snapshot.draft)
+      ? visualizationInput
+      : null;
   const [feedback, setFeedback] = useState('');
   const [pendingCommand, setPendingCommand] = useState<
     PlanWorkflowCommand['kind'] | null
@@ -228,27 +469,76 @@ export function PlanningWorkflowCard({
     });
 
   if (snapshot.state === 'collecting') {
-    if (workflow.busy) {
+    if (workflow.busy && interviewDecisions.length === 0) {
       return null;
     }
+    const understandingConfirmed = interviewDecisions.some(
+      (decision) => decision.purpose === 'understanding_confirmation',
+    );
     return (
       <section
-        className="planning-workflow-collecting-control"
+        className={`planning-workflow-collecting-control${
+          interviewDecisions.length === 0 ? '' : ' has-decisions'
+        }${workflow.busy ? ' is-busy' : ''}`}
         aria-label="진행 중인 계획 워크플로"
       >
-        <span>
-          {snapshot.depth === 'deep'
-            ? '심층 계획 진행 중'
-            : '일반 계획 진행 중'}
-        </span>
-        <button
-          type="button"
-          className="planning-workflow-collecting-cancel"
-          disabled={actionsDisabled}
-          onClick={() => void cancel()}
-        >
-          계획 취소
-        </button>
+        <div className="planning-workflow-collecting-summary">
+          {workflow.busy && interviewDecisions.length > 0 ? (
+            <span
+              className="planning-workflow-collecting-spark"
+              aria-hidden="true"
+            >
+              ✦
+            </span>
+          ) : null}
+          <span className="planning-workflow-collecting-mode">
+            {interviewDecisions.length === 0
+              ? snapshot.depth === 'deep'
+                ? '심층 계획 진행 중'
+                : '일반 계획 진행 중'
+              : understandingConfirmed
+                ? '목표 이해 확인'
+                : snapshot.depth === 'deep'
+                  ? '심층 인터뷰'
+                  : '계획 확인'}
+          </span>
+          {interviewDecisions.length === 0 ? null : (
+            <details className="planning-workflow-interview-ledger">
+              <summary>
+                {understandingConfirmed ? '확인한 내용' : '확정한 선택'}{' '}
+                {interviewDecisions.length}개
+              </summary>
+              <ol>
+                {interviewDecisions.map((decision, index) => (
+                  <li
+                    key={`${decision.question}:${index}`}
+                    className={
+                      decision.purpose === 'understanding_confirmation'
+                        ? 'is-understanding-confirmation'
+                        : undefined
+                    }
+                  >
+                    {decision.purpose === 'understanding_confirmation' ? (
+                      <small>제가 이해한 목표</small>
+                    ) : null}
+                    <span>{decision.question}</span>
+                    <strong>{decision.answer}</strong>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
+        </div>
+        {workflow.busy ? null : (
+          <button
+            type="button"
+            className="planning-workflow-collecting-cancel"
+            disabled={actionsDisabled}
+            onClick={() => void cancel()}
+          >
+            계획 취소
+          </button>
+        )}
         {error === null ? null : (
           <p className="planning-workflow-error" role="alert">
             {error}
@@ -258,6 +548,11 @@ export function PlanningWorkflowCard({
     );
   }
 
+  const planStepStates = resolveVisualPlanStepStates(
+    snapshot.draft,
+    snapshot.state,
+    executionPlan,
+  );
   const stamp =
     snapshot.state === 'approved_pending_publish' ||
     snapshot.state === 'awaiting_approval' ||
@@ -290,6 +585,20 @@ export function PlanningWorkflowCard({
           <span className="planning-workflow-state">게시 보류</span>
         </div>
         <code className="planning-workflow-stamp">{stamp}</code>
+        {visualization === null ? null : (
+          <div className="planning-workflow-visualization">
+            <VisualizeWidget
+              view={visualization}
+              planningWorkflowSnapshot={snapshot}
+              planStepStates={planStepStates}
+              playback="instant"
+              {...(onWidgetPrompt === undefined ? {} : { onWidgetPrompt })}
+              {...(onWidgetToolRequest === undefined
+                ? {}
+                : { onWidgetToolRequest })}
+            />
+          </div>
+        )}
         <div className="planning-workflow-actions">
           <button
             type="button"
@@ -358,6 +667,20 @@ export function PlanningWorkflowCard({
           ) : null}
         </div>
         <code className="planning-workflow-stamp">{stamp}</code>
+        {visualization === null ? null : (
+          <div className="planning-workflow-visualization">
+            <VisualizeWidget
+              view={visualization}
+              planningWorkflowSnapshot={snapshot}
+              planStepStates={planStepStates}
+              playback="instant"
+              {...(onWidgetPrompt === undefined ? {} : { onWidgetPrompt })}
+              {...(onWidgetToolRequest === undefined
+                ? {}
+                : { onWidgetToolRequest })}
+            />
+          </div>
+        )}
         {snapshot.state === 'execution_failed' ? (
           <>
             <div className="planning-workflow-actions">
@@ -390,6 +713,13 @@ export function PlanningWorkflowCard({
     snapshot.draft.outcome,
     fileReferences,
   );
+  const revisionChanges =
+    snapshot.supersededPlan === undefined
+      ? null
+      : resolvePlanningRevisionSummary(
+          snapshot.supersededPlan.draft,
+          snapshot.draft,
+        );
 
   return (
     <section className="planning-workflow-card" aria-label="계획 승인">
@@ -420,13 +750,80 @@ export function PlanningWorkflowCard({
         </div>
       )}
 
+      {snapshot.draft.decisions.length === 0 ? null : (
+        <section
+          className="planning-workflow-decision-ledger"
+          aria-label="승인에 포함된 선택"
+        >
+          <header>
+            <span>승인에 포함된 선택</span>
+            <strong>{snapshot.draft.decisions.length}</strong>
+          </header>
+          <ol>
+            {snapshot.draft.decisions.map((decision, index) => (
+              <li key={`${decision.text}:${index}`}>
+                <span
+                  className={`planning-workflow-decision-source ${decision.settledBy}`}
+                >
+                  {decision.settledBy === 'user'
+                    ? '사용자 선택'
+                    : '에이전트 판단'}
+                </span>
+                <span>{decision.text}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+
+      {revisionChanges === null ? null : (
+        <details className="planning-workflow-revision-summary">
+          <summary>
+            <span>
+              이전 계획에서 달라진 점 · r{snapshot.supersededPlan?.revision} → r
+              {snapshot.revision}
+            </span>
+            <strong>
+              {revisionChanges.length === 0
+                ? '내용 변경 없음'
+                : `${revisionChanges.length}개`}
+            </strong>
+          </summary>
+          {revisionChanges.length === 0 ? (
+            <p>
+              다시 제안된 내용은 이전 revision과 같습니다. 승인 전에 수정 요청이
+              반영되었는지 확인해 주세요.
+            </p>
+          ) : (
+            <ul>
+              {revisionChanges.map((change, index) => (
+                <li
+                  key={`${change.kind}:${change.label}:${index}`}
+                  className={change.kind}
+                >
+                  <span aria-hidden="true">
+                    {change.kind === 'added'
+                      ? '+'
+                      : change.kind === 'removed'
+                        ? '−'
+                        : '↻'}
+                  </span>
+                  <span>{change.label}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
+      )}
+
       {visualization === null ? (
         snapshot.intensity === 'visual' ? (
-          <p className="planning-workflow-note" role="status">
-            {workflow.busy || visualRequestPending
-              ? '관계 그림을 그리는 중… 완성되면 이 카드 맨 위에 표시됩니다.'
-              : '그림이 아직 없어요. 텍스트 계획을 검토하거나 그림을 다시 요청할 수 있습니다.'}
-          </p>
+          <PlanningWorkflowVisualPreparing
+            decisionCount={snapshot.draft.decisions.length}
+            stepCount={snapshot.draft.steps.length}
+            outcome={planCardTitle}
+            busy={workflow.busy || visualRequestPending}
+          />
         ) : null
       ) : (
         <div className="planning-workflow-visualization">
@@ -438,6 +835,7 @@ export function PlanningWorkflowCard({
             <VisualizeWidget
               view={visualization}
               planningWorkflowSnapshot={snapshot}
+              planStepStates={planStepStates}
               playback="instant"
             />
           </div>
@@ -472,6 +870,10 @@ export function PlanningWorkflowCard({
               <div>
                 <span>계획 그림</span>
                 <strong id={visualDialogTitleId}>{planCardTitle}</strong>
+                <p>
+                  그림의 항목을 누르면 계획은 그대로 둔 채 그 부분을 더 물어볼
+                  수 있어요.
+                </p>
               </div>
               <button
                 ref={visualCloseButtonRef}
@@ -486,6 +888,7 @@ export function PlanningWorkflowCard({
               <VisualizeWidget
                 view={visualization}
                 planningWorkflowSnapshot={snapshot}
+                planStepStates={planStepStates}
                 playback="instant"
                 {...(onWidgetPrompt === undefined ? {} : { onWidgetPrompt })}
                 {...(onWidgetToolRequest === undefined

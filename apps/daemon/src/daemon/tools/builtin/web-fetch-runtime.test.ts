@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { fetchWebUrl, requestWebFetchUrl } from './web-fetch-runtime.js';
+import { fetchWebUrl } from './web-fetch-runtime.js';
 
 void test('fetchWebUrl shapes successful text content and labels it untrusted', async () => {
   const result = await fetchWebUrl({
@@ -199,51 +199,13 @@ void test('fetchWebUrl does not pass hidden timeout policy to the transport', as
   assert.equal(timeoutFieldWasPresent, false);
 });
 
-void test('requestWebFetchUrl rejects already-aborted signals before DNS lookup', async () => {
-  const controller = new AbortController();
-  controller.abort();
-  let lookupCalled = false;
+void test('fetchWebUrl fails closed without a host-routed transport', async () => {
+  const result = await fetchWebUrl({
+    url: 'https://example.com/',
+    extractMode: 'text',
+  });
 
-  await assert.rejects(
-    () =>
-      requestWebFetchUrl(new URL('https://example.test/'), {
-        signal: controller.signal,
-        lookup: async () => {
-          lookupCalled = true;
-          return [{ address: '93.184.216.34', family: 4 }];
-        },
-      }),
-    /aborted/,
-  );
-
-  assert.equal(lookupCalled, false);
-});
-
-void test('requestWebFetchUrl applies guarded lookup before connecting', async () => {
-  await assert.rejects(
-    () =>
-      requestWebFetchUrl(new URL('https://example.test/'), {
-        lookup: async () => [{ address: '127.0.0.1', family: 4 }],
-      }),
-    /unsafe network address/,
-  );
-});
-
-void test('requestWebFetchUrl honors Node all-address lookup callbacks', async () => {
-  const controller = new AbortController();
-
-  await assert.rejects(
-    () =>
-      requestWebFetchUrl(new URL('http://example.test:9/'), {
-        signal: controller.signal,
-        lookup: async () => {
-          // The SSRF guard intentionally rejects localhost. Use a public
-          // address and abort before a transport can complete so this stays a
-          // Node lookup-contract test rather than an external HTTP fixture.
-          setImmediate(() => controller.abort());
-          return [{ address: '93.184.216.34', family: 4 }];
-        },
-      }),
-    /fetch_url aborted/u,
-  );
+  assert.equal(result.ok, false);
+  assert.equal(result.reasonCode, 'network_error');
+  assert.match(result.message, /Host-routed public HTTP transport/u);
 });

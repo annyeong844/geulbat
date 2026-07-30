@@ -17,6 +17,7 @@ import {
   THREAD_ID,
   createPersistedThreadDetail,
 } from '../test-support/run-session-fixtures.js';
+import { makeApprovalRequiredFixture } from '../test-support/protocol-fixtures.js';
 
 void test('handleRunSessionMessage acknowledges the run and refreshes threads', async () => {
   const actions: RunSessionStateAction[] = [];
@@ -185,6 +186,46 @@ void test('handleRunSessionMessage ignores usage from an earlier same-thread run
   });
 
   assert.equal(state.activeRunView.usageTotals, null);
+});
+
+void test('handleRunSessionMessage preserves the parent event owner separately from a child approval target', async () => {
+  const actions: RunSessionStateAction[] = [];
+  const pendingApproval = makeApprovalRequiredFixture({
+    callId: 'child-approval',
+    runId: CHILD_RUN_ID,
+    threadId: THREAD_ID,
+  });
+
+  await handleRunSessionMessage({
+    message: {
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 3,
+        ts: new Date().toISOString(),
+        type: 'approval_required',
+        payload: pendingApproval,
+      },
+    },
+    dispatch: (action) => {
+      actions.push(action);
+    },
+    requestComputerTreeRefresh: () => {},
+    handleRunStarted: () => {},
+    handleRunSettledSuccess: async () => {},
+    handleRunSettleSyncFailed: async () => {},
+    handleRunSettledError: async () => {},
+  });
+
+  assert.deepEqual(actions, [
+    {
+      type: 'approval_requested',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      pendingApproval,
+    },
+  ]);
 });
 
 void test('handleRunSessionMessage ignores applied interjects from an earlier same-thread run', async () => {

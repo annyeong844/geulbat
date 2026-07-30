@@ -49,6 +49,7 @@ export async function runReactBundleStructuredOutputCaller(args: {
   timeoutMs?: number;
   signal?: AbortSignal;
   now?: () => string;
+  publicHttpRead?: Parameters<RunIngress>[0]['publicHttpRead'];
   probeTransport?: Parameters<RunIngress>[0]['probeTransport'];
   dockerCommandRunner?: Parameters<RunIngress>[0]['dockerCommandRunner'];
   runIngress?: RunIngress;
@@ -103,6 +104,9 @@ export async function runReactBundleStructuredOutputCaller(args: {
   }
   if (args.now !== undefined) {
     ingressArgs.now = args.now;
+  }
+  if (args.publicHttpRead !== undefined) {
+    ingressArgs.publicHttpRead = args.publicHttpRead;
   }
   if (args.probeTransport !== undefined) {
     ingressArgs.probeTransport = args.probeTransport;

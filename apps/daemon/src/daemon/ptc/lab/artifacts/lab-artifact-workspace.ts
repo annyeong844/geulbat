@@ -127,7 +127,7 @@ function sanitizeDiagnosticValue(value: string): string {
 }
 
 function validateRelativePath(
-  relativePath: string,
+  relativePath: unknown,
 ): PtcLabArtifactWorkspaceImportResult<string> {
   if (typeof relativePath !== 'string') {
     return failure(

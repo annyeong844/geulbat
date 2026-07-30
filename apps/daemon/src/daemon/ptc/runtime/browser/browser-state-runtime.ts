@@ -43,8 +43,8 @@ const PTC_BROWSER_TEXT_EVIDENCE_WARM_CDP_DOCKER_RESOURCES = Object.freeze({
   cpus: '2',
   memory: '1g',
   pidsLimit: '512',
-  scratchTmpfs: '/geulbat/scratch:rw,noexec,nosuid,nodev,size=512m',
-  tmpTmpfs: '/tmp:rw,nosuid,nodev,size=512m',
+  scratchTmpfs: '/geulbat/scratch:rw,noexec,nosuid,nodev,mode=1777,size=512m',
+  tmpTmpfs: '/tmp:rw,nosuid,nodev,mode=1777,size=512m',
 });
 
 type CreatePtcBrowserSessionManager = typeof createPtcSessionDockerManager;

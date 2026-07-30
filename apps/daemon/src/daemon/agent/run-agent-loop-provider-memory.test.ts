@@ -112,6 +112,10 @@ void test('runAgentLoop wires the runtime memory owner into pre-dispatch prepara
         loopMemory: {
           beginContextBudgetRound(args) {
             assert.equal(args.threadId, threadId);
+            assert.equal(
+              args.providerWebSocketSessions,
+              daemonContext.provider.webSocketSessions,
+            );
             return {
               onProviderRequestPrepared(measurement) {
                 assert.equal(measurement.serializedBytes, 256);
@@ -134,8 +138,12 @@ void test('runAgentLoop wires the runtime memory owner into pre-dispatch prepara
               publish() {},
             };
           },
-          async compactAfterModelRound() {
+          async compactAfterModelRound(args) {
             postRoundCalls += 1;
+            assert.equal(
+              args.providerWebSocketSessions,
+              daemonContext.provider.webSocketSessions,
+            );
             return { kind: 'not_needed', reason: 'under_threshold' };
           },
         },

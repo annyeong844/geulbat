@@ -25,6 +25,7 @@ interface HomeCenterSurfaceProps {
   settingsOpen: boolean;
   extensionsOpen?: boolean;
   sessionsOpen?: boolean;
+  reviewOpen?: boolean;
   // 아티팩트 표면 — 설정이 닫혀 있고 artifact 노드가 있으면 편집기 대신
   // 중앙 넓은 화면을 아티팩트가 차지한다
   artifact?: ReactNode;
@@ -32,22 +33,33 @@ interface HomeCenterSurfaceProps {
   extensions?: ReactNode;
   settings: ReactNode;
   sessions?: ReactNode;
+  review?: ReactNode;
 }
 
 export function HomeCenterSurface({
   settingsOpen,
   extensionsOpen = false,
   sessionsOpen = false,
+  reviewOpen = false,
   artifact = null,
   editor,
   extensions = null,
   settings,
   sessions = null,
+  review = null,
 }: HomeCenterSurfaceProps) {
   const artifactOpen =
-    !settingsOpen && !extensionsOpen && !sessionsOpen && artifact !== null;
+    !settingsOpen &&
+    !extensionsOpen &&
+    !sessionsOpen &&
+    !reviewOpen &&
+    artifact !== null;
   const editorHidden =
-    settingsOpen || extensionsOpen || sessionsOpen || artifactOpen;
+    settingsOpen ||
+    extensionsOpen ||
+    sessionsOpen ||
+    reviewOpen ||
+    artifactOpen;
   return (
     <>
       <div
@@ -60,6 +72,7 @@ export function HomeCenterSurface({
       {settingsOpen ? settings : null}
       {extensionsOpen ? extensions : null}
       {sessionsOpen ? sessions : null}
+      {reviewOpen ? review : null}
       {artifactOpen ? artifact : null}
     </>
   );

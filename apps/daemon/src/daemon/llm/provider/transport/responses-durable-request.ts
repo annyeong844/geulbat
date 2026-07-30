@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, readdir, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { writeTextFileAtomically } from '../../../utils/atomic-file.js';
@@ -24,6 +24,8 @@ export interface ResponsesDurableRequestStreamArgs {
   serializedPayload: string;
   providerSessionId: string;
   requestAttempt: number;
+  resumeRequestIdentity?: string;
+  onPrepared?: DurableProviderRequestPreparedHandler;
   completionEventTypes?: readonly string[];
   onDispatched?: () => void;
   signal?: AbortSignal;
@@ -35,6 +37,8 @@ export interface DurableHttpSseRequestStreamArgs {
   serializedPayload: string;
   providerSessionId: string;
   requestAttempt: number;
+  resumeRequestIdentity?: string;
+  onPrepared?: DurableProviderRequestPreparedHandler;
   onDispatched?: () => void;
   signal?: AbortSignal;
 }
@@ -42,6 +46,17 @@ export interface DurableHttpSseRequestStreamArgs {
 type DurableProviderRequestStreamArgs =
   | ResponsesDurableRequestStreamArgs
   | DurableHttpSseRequestStreamArgs;
+
+export interface DurableProviderRequestPreparedSnapshot {
+  requestIdentity: string;
+  providerRequestAttempt: number;
+  transportKind: 'websocket' | 'http_json_sse';
+  resumed: boolean;
+}
+
+export type DurableProviderRequestPreparedHandler = (
+  snapshot: DurableProviderRequestPreparedSnapshot,
+) => void | Promise<void>;
 
 export interface ResponsesDurableRequestTransport {
   streamEvents(
@@ -58,6 +73,25 @@ interface ResponsesDurableRequestActiveOutputs {
   ): Promise<
     { ok: true; refs: ReadonlySet<string> } | { ok: false; reason: string }
   >;
+}
+
+export type ResponsesDurableRequestRecoveryResult =
+  | {
+      ok: true;
+      disposition: 'terminal_available' | 'owner_active' | 'abandoned';
+    }
+  | {
+      ok: false;
+      code: 'not_found' | 'conflict';
+      message: string;
+    };
+
+export interface ResponsesDurableRequestRecovery {
+  recoverOutcomeUnknown(args: {
+    providerSessionId: string;
+    authorizedByComputerSessionId: string;
+    acknowledgePossibleDuplicateProviderWork: true;
+  }): Promise<ResponsesDurableRequestRecoveryResult>;
 }
 
 interface ResponsesDurableRequestProcessHandle {
@@ -104,6 +138,15 @@ interface DurableRequestCoordinate {
   version: typeof RESPONSES_DURABLE_REQUEST_PROTOCOL_VERSION;
   requestIdentity: string;
   outputRef: string;
+  // 원문 provider session/thread id를 durable state에 추가로 남기지 않고도
+  // daemon 재시작 뒤 인증된 복구 명령이 자기 좌표를 찾게 한다.
+  providerSessionIdentityHash?: string;
+}
+
+interface OutcomeUnknownCoordinate {
+  coordinatePath: string;
+  requestIdentity: string;
+  outputRef: string;
 }
 
 interface WorkerCommand {
@@ -117,16 +160,32 @@ export function createHostRoutedResponsesRequestTransport(args: {
   attachProcess: AttachProcess;
   resolveTerminalArtifactPath: (outputRef: string) => string;
   workerCommand?: WorkerCommand;
-}): ResponsesDurableRequestTransport & ResponsesDurableRequestActiveOutputs {
+}): ResponsesDurableRequestTransport &
+  ResponsesDurableRequestActiveOutputs &
+  ResponsesDurableRequestRecovery {
   const coordinateRoot = join(
     args.stateRoot,
     '.geulbat',
     'provider-request-coordinates',
   );
+  const abandonmentRoot = join(
+    args.stateRoot,
+    '.geulbat',
+    'provider-request-abandonments',
+  );
+  // 복구 명령은 사용자가 방금 본 outcome-unknown 실패만 대상으로 삼는다.
+  // 디스크 전체를 thread id로 역추측하지 않고, 실패를 관찰한 transport가
+  // 그 정확한 좌표를 짧게 보관한다. daemon 재시작 뒤 같은 요청을 다시
+  // 확인하면 이 표면이 다시 채워진다.
+  const outcomeUnknownByProviderSession = new Map<
+    string,
+    OutcomeUnknownCoordinate
+  >();
 
   return {
     streamEvents: (input) => streamRequestEvents(input),
     streamHttpSseEvents: (input) => streamRequestEvents(input),
+    recoverOutcomeUnknown: async (input) => recoverOutcomeUnknown(input),
     async activeOutputRefs(stateRoot) {
       if (stateRoot !== args.stateRoot) {
         return { ok: true, refs: new Set<string>() };
@@ -178,7 +237,9 @@ export function createHostRoutedResponsesRequestTransport(args: {
         observeDispatched();
       }
     };
-    const requestIdentity = buildRequestIdentity(input);
+    const computedRequestIdentity = buildRequestIdentity(input);
+    const requestIdentity =
+      input.resumeRequestIdentity ?? computedRequestIdentity;
     const coordinatePath = join(
       coordinateRoot,
       `${buildProviderSessionKey(input)}.json`,
@@ -186,6 +247,15 @@ export function createHostRoutedResponsesRequestTransport(args: {
     const existing = await readCoordinate(coordinatePath);
     if (existing.kind === 'invalid') {
       throw new Error('provider request coordinate is unreadable');
+    }
+    if (
+      input.resumeRequestIdentity !== undefined &&
+      (existing.kind !== 'value' ||
+        existing.value.requestIdentity !== input.resumeRequestIdentity)
+    ) {
+      throw outcomeUnknownError(
+        'active model round provider request coordinate is unavailable',
+      );
     }
 
     let handle: StartedHandle;
@@ -195,11 +265,24 @@ export function createHostRoutedResponsesRequestTransport(args: {
       existing.value.requestIdentity === requestIdentity
     ) {
       outputRef = existing.value.outputRef;
+      await input.onPrepared?.({
+        requestIdentity,
+        providerRequestAttempt: input.requestAttempt,
+        transportKind: isWebSocketRequest(input)
+          ? 'websocket'
+          : 'http_json_sse',
+        resumed: true,
+      });
       const terminal = await readTerminalArtifact(
         args.resolveTerminalArtifactPath(outputRef),
         requestIdentity,
       );
       if (terminal.kind === 'value') {
+        forgetOutcomeUnknown(input.providerSessionId, {
+          coordinatePath,
+          requestIdentity,
+          outputRef,
+        });
         observeTerminalDispatch(terminal.value);
         yield* replayTerminalArtifact(terminal.value, 0);
         return;
@@ -214,11 +297,20 @@ export function createHostRoutedResponsesRequestTransport(args: {
           requestIdentity,
         );
         if (afterAttach.kind === 'value') {
+          forgetOutcomeUnknown(input.providerSessionId, {
+            coordinatePath,
+            requestIdentity,
+            outputRef,
+          });
           observeTerminalDispatch(afterAttach.value);
           yield* replayTerminalArtifact(afterAttach.value, 0);
           return;
         }
-        throw outcomeUnknownError(attached.message);
+        throw rememberOutcomeUnknown(
+          input.providerSessionId,
+          { coordinatePath, requestIdentity, outputRef },
+          attached.message,
+        );
       }
       handle = attached.handle;
     } else {
@@ -227,11 +319,25 @@ export function createHostRoutedResponsesRequestTransport(args: {
           args.resolveTerminalArtifactPath(existing.value.outputRef),
           existing.value.requestIdentity,
         );
-        if (previous.kind !== 'value') {
-          throw new Error(
+        if (previous.kind === 'invalid') {
+          throw new Error('provider request terminal artifact is unreadable');
+        }
+        if (previous.kind === 'missing') {
+          throw rememberOutcomeUnknown(
+            input.providerSessionId,
+            {
+              coordinatePath,
+              requestIdentity: existing.value.requestIdentity,
+              outputRef: existing.value.outputRef,
+            },
             'provider session already has an unresolved durable request',
           );
         }
+        forgetOutcomeUnknown(input.providerSessionId, {
+          coordinatePath,
+          requestIdentity: existing.value.requestIdentity,
+          outputRef: existing.value.outputRef,
+        });
       }
       const workerCommand =
         args.workerCommand ?? resolveResponsesDurableRequestWorkerCommand();
@@ -263,6 +369,9 @@ export function createHostRoutedResponsesRequestTransport(args: {
         version: RESPONSES_DURABLE_REQUEST_PROTOCOL_VERSION,
         requestIdentity,
         outputRef,
+        providerSessionIdentityHash: hashPrivateIdentity(
+          input.providerSessionId,
+        ),
       };
       try {
         await writeTextFileAtomically(
@@ -271,6 +380,24 @@ export function createHostRoutedResponsesRequestTransport(args: {
           { mode: 0o600 },
         );
       } catch (error: unknown) {
+        handle.stop();
+        throw error;
+      }
+      try {
+        await input.onPrepared?.({
+          requestIdentity,
+          providerRequestAttempt: input.requestAttempt,
+          transportKind: isWebSocketRequest(input)
+            ? 'websocket'
+            : 'http_json_sse',
+          resumed: false,
+        });
+      } catch (error: unknown) {
+        await clearCoordinateIfOwned({
+          coordinatePath,
+          requestIdentity,
+          outputRef,
+        });
         handle.stop();
         throw error;
       }
@@ -293,11 +420,20 @@ export function createHostRoutedResponsesRequestTransport(args: {
         requestIdentity,
       );
       if (terminal.kind === 'value') {
+        forgetOutcomeUnknown(input.providerSessionId, {
+          coordinatePath,
+          requestIdentity,
+          outputRef,
+        });
         observeTerminalDispatch(terminal.value);
         yield* replayTerminalArtifact(terminal.value, 0);
         return;
       }
-      throw outcomeUnknownError(committed.message);
+      throw rememberOutcomeUnknown(
+        input.providerSessionId,
+        { coordinatePath, requestIdentity, outputRef },
+        committed.message,
+      );
     }
 
     let stdoutBuffer = '';
@@ -336,6 +472,11 @@ export function createHostRoutedResponsesRequestTransport(args: {
               requestIdentity,
             );
             if (terminal.kind === 'value') {
+              forgetOutcomeUnknown(input.providerSessionId, {
+                coordinatePath,
+                requestIdentity,
+                outputRef,
+              });
               observeTerminalDispatch(terminal.value);
               yield* replayTerminalArtifact(terminal.value, deliveredEvents);
               reachedTerminal = true;
@@ -346,7 +487,9 @@ export function createHostRoutedResponsesRequestTransport(args: {
               throw hydrateResponsesDurableRequestError(frame.error);
             }
             outcomeIsUnknown = true;
-            throw outcomeUnknownError(
+            throw rememberOutcomeUnknown(
+              input.providerSessionId,
+              { coordinatePath, requestIdentity, outputRef },
               'provider request completed without a durable terminal artifact',
             );
           }
@@ -384,13 +527,20 @@ export function createHostRoutedResponsesRequestTransport(args: {
             requestIdentity,
           );
           if (terminal.kind === 'value') {
+            forgetOutcomeUnknown(input.providerSessionId, {
+              coordinatePath,
+              requestIdentity,
+              outputRef,
+            });
             observeTerminalDispatch(terminal.value);
             yield* replayTerminalArtifact(terminal.value, deliveredEvents);
             reachedTerminal = true;
             return;
           }
           outcomeIsUnknown = true;
-          throw outcomeUnknownError(
+          throw rememberOutcomeUnknown(
+            input.providerSessionId,
+            { coordinatePath, requestIdentity, outputRef },
             `provider request host exited (${describeProcessExit(wake.exit)})${
               redactHostStderr(stderrBuffer, input) === ''
                 ? ''
@@ -402,6 +552,10 @@ export function createHostRoutedResponsesRequestTransport(args: {
     } finally {
       if (!reachedTerminal && !isDetachOnlyReason(input.signal?.reason)) {
         handle.stop();
+        // stop() only requests termination. Do not let the caller tear down
+        // this transport's state root while the host-routed worker can still
+        // publish its final command-session metadata.
+        await handle.exit;
         // An unknown-outcome coordinate is the durable fence that prevents the
         // same provider request from being dispatched again without evidence.
         if (!outcomeIsUnknown) {
@@ -410,9 +564,224 @@ export function createHostRoutedResponsesRequestTransport(args: {
             requestIdentity,
             outputRef,
           });
+          forgetOutcomeUnknown(input.providerSessionId, {
+            coordinatePath,
+            requestIdentity,
+            outputRef,
+          });
         }
       }
     }
+  }
+
+  function rememberOutcomeUnknown(
+    providerSessionId: string,
+    coordinate: OutcomeUnknownCoordinate,
+    detail: string,
+  ): Error {
+    outcomeUnknownByProviderSession.set(providerSessionId, coordinate);
+    return outcomeUnknownError(detail);
+  }
+
+  function forgetOutcomeUnknown(
+    providerSessionId: string,
+    coordinate: OutcomeUnknownCoordinate,
+  ): void {
+    const remembered = outcomeUnknownByProviderSession.get(providerSessionId);
+    if (
+      remembered?.coordinatePath === coordinate.coordinatePath &&
+      remembered.requestIdentity === coordinate.requestIdentity &&
+      remembered.outputRef === coordinate.outputRef
+    ) {
+      outcomeUnknownByProviderSession.delete(providerSessionId);
+    }
+  }
+
+  async function recoverOutcomeUnknown(input: {
+    providerSessionId: string;
+    authorizedByComputerSessionId: string;
+    acknowledgePossibleDuplicateProviderWork: true;
+  }): Promise<ResponsesDurableRequestRecoveryResult> {
+    let remembered = outcomeUnknownByProviderSession.get(
+      input.providerSessionId,
+    );
+    if (remembered === undefined) {
+      const discovered = await discoverOutcomeUnknownCoordinate(
+        input.providerSessionId,
+      );
+      if (!discovered.ok) {
+        return discovered;
+      }
+      remembered = discovered.coordinate;
+      outcomeUnknownByProviderSession.set(input.providerSessionId, remembered);
+    }
+
+    const terminalPath = args.resolveTerminalArtifactPath(remembered.outputRef);
+    const terminal = await readTerminalArtifact(
+      terminalPath,
+      remembered.requestIdentity,
+    );
+    if (terminal.kind === 'invalid') {
+      return {
+        ok: false,
+        code: 'conflict',
+        message: 'provider request terminal artifact is unreadable',
+      };
+    }
+    if (terminal.kind === 'value') {
+      forgetOutcomeUnknown(input.providerSessionId, remembered);
+      return { ok: true, disposition: 'terminal_available' };
+    }
+
+    const attached = await args.attachProcess({
+      outputRef: remembered.outputRef,
+    });
+    if (attached.ok) {
+      return { ok: true, disposition: 'owner_active' };
+    }
+
+    // attach 실패와 terminal commit은 경합할 수 있다. 좌표를 해제하기 전에
+    // 반드시 한 번 더 durable evidence를 확인한다.
+    const afterAttach = await readTerminalArtifact(
+      terminalPath,
+      remembered.requestIdentity,
+    );
+    if (afterAttach.kind === 'invalid') {
+      return {
+        ok: false,
+        code: 'conflict',
+        message: 'provider request terminal artifact is unreadable',
+      };
+    }
+    if (afterAttach.kind === 'value') {
+      forgetOutcomeUnknown(input.providerSessionId, remembered);
+      return { ok: true, disposition: 'terminal_available' };
+    }
+
+    const coordinate = await readCoordinate(remembered.coordinatePath);
+    if (
+      coordinate.kind === 'invalid' ||
+      (coordinate.kind === 'value' &&
+        (coordinate.value.requestIdentity !== remembered.requestIdentity ||
+          coordinate.value.outputRef !== remembered.outputRef))
+    ) {
+      return {
+        ok: false,
+        code: 'conflict',
+        message: 'provider request coordinate changed during recovery',
+      };
+    }
+
+    const decisionId = randomUUID();
+    await writeTextFileAtomically(
+      join(abandonmentRoot, `${decisionId}.json`),
+      JSON.stringify({
+        version: 1,
+        action: 'abandon_provider_request_outcome_unknown',
+        decisionId,
+        authorizedAt: new Date().toISOString(),
+        providerSessionIdentityHash: hashPrivateIdentity(
+          input.providerSessionId,
+        ),
+        actorComputerSessionIdentityHash: hashPrivateIdentity(
+          input.authorizedByComputerSessionId,
+        ),
+        coordinateKey: basename(remembered.coordinatePath),
+        requestIdentity: remembered.requestIdentity,
+        outputRef: remembered.outputRef,
+        acknowledgePossibleDuplicateProviderWork:
+          input.acknowledgePossibleDuplicateProviderWork,
+      }),
+      { mode: 0o600 },
+    );
+
+    if (coordinate.kind === 'value') {
+      const cleared = await clearCoordinateIfOwned(remembered);
+      if (!cleared) {
+        return {
+          ok: false,
+          code: 'conflict',
+          message: 'provider request coordinate changed during recovery',
+        };
+      }
+    }
+    forgetOutcomeUnknown(input.providerSessionId, remembered);
+    return { ok: true, disposition: 'abandoned' };
+  }
+
+  async function discoverOutcomeUnknownCoordinate(
+    providerSessionId: string,
+  ): Promise<
+    | { ok: true; coordinate: OutcomeUnknownCoordinate }
+    | Extract<ResponsesDurableRequestRecoveryResult, { ok: false }>
+  > {
+    let entries: string[];
+    try {
+      entries = await readdir(coordinateRoot);
+    } catch (error: unknown) {
+      if (isMissingFileError(error)) {
+        return {
+          ok: false,
+          code: 'not_found',
+          message: 'no outcome-unknown provider request exists for this thread',
+        };
+      }
+      return {
+        ok: false,
+        code: 'conflict',
+        message: 'provider request coordinates could not be listed',
+      };
+    }
+
+    const providerSessionIdentityHash = hashPrivateIdentity(providerSessionId);
+    const matches: OutcomeUnknownCoordinate[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith('.json')) {
+        continue;
+      }
+      const coordinatePath = join(coordinateRoot, entry);
+      const coordinate = await readCoordinate(coordinatePath);
+      if (coordinate.kind === 'invalid') {
+        return {
+          ok: false,
+          code: 'conflict',
+          message: 'provider request coordinate could not be read',
+        };
+      }
+      if (
+        coordinate.kind === 'value' &&
+        coordinate.value.providerSessionIdentityHash ===
+          providerSessionIdentityHash
+      ) {
+        matches.push({
+          coordinatePath,
+          requestIdentity: coordinate.value.requestIdentity,
+          outputRef: coordinate.value.outputRef,
+        });
+      }
+    }
+    if (matches.length === 0) {
+      return {
+        ok: false,
+        code: 'not_found',
+        message: 'no outcome-unknown provider request exists for this thread',
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        code: 'conflict',
+        message: 'multiple provider request coordinates match this thread',
+      };
+    }
+    const coordinate = matches[0];
+    return coordinate === undefined
+      ? {
+          ok: false,
+          code: 'not_found',
+          message: 'no outcome-unknown provider request exists for this thread',
+        }
+      : { ok: true, coordinate };
   }
 }
 
@@ -631,7 +1000,9 @@ async function readCoordinate(
       Reflect.get(value, 'version') !==
         RESPONSES_DURABLE_REQUEST_PROTOCOL_VERSION ||
       typeof Reflect.get(value, 'requestIdentity') !== 'string' ||
-      typeof Reflect.get(value, 'outputRef') !== 'string'
+      typeof Reflect.get(value, 'outputRef') !== 'string' ||
+      (Reflect.get(value, 'providerSessionIdentityHash') !== undefined &&
+        typeof Reflect.get(value, 'providerSessionIdentityHash') !== 'string')
     ) {
       return { kind: 'invalid' };
     }
@@ -641,6 +1012,15 @@ async function readCoordinate(
         version: RESPONSES_DURABLE_REQUEST_PROTOCOL_VERSION,
         requestIdentity: Reflect.get(value, 'requestIdentity') as string,
         outputRef: Reflect.get(value, 'outputRef') as string,
+        ...(typeof Reflect.get(value, 'providerSessionIdentityHash') ===
+        'string'
+          ? {
+              providerSessionIdentityHash: Reflect.get(
+                value,
+                'providerSessionIdentityHash',
+              ) as string,
+            }
+          : {}),
       },
     };
   } catch {
@@ -652,15 +1032,21 @@ async function clearCoordinateIfOwned(args: {
   coordinatePath: string;
   requestIdentity: string;
   outputRef: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const coordinate = await readCoordinate(args.coordinatePath);
   if (
     coordinate.kind === 'value' &&
     coordinate.value.requestIdentity === args.requestIdentity &&
     coordinate.value.outputRef === args.outputRef
   ) {
-    await unlink(args.coordinatePath).catch(() => undefined);
+    try {
+      await unlink(args.coordinatePath);
+      return true;
+    } catch (error: unknown) {
+      return isMissingFileError(error);
+    }
   }
+  return coordinate.kind === 'missing';
 }
 
 function isDetachOnlyReason(reason: unknown): boolean {
@@ -675,9 +1061,10 @@ function describeProcessExit(exit: unknown): string {
   if (exit === null || typeof exit !== 'object') {
     return 'unknown';
   }
-  const kind = Reflect.get(exit, 'kind');
-  const exitCode = Reflect.get(exit, 'exitCode');
-  const message = Reflect.get(exit, 'message');
+  const exitRecord = exit as Record<PropertyKey, unknown>;
+  const kind = exitRecord['kind'];
+  const exitCode = exitRecord['exitCode'];
+  const message = exitRecord['message'];
   return `${typeof kind === 'string' ? kind : 'unknown'}:${
     typeof exitCode === 'number' ? String(exitCode) : 'none'
   }${typeof message === 'string' ? `:${message}` : ''}`;
@@ -688,6 +1075,10 @@ function outcomeUnknownError(detail: string): Error {
     new Error(`provider request outcome is unknown: ${detail}`),
     { llmCode: 'llm_provider_request_outcome_unknown' as const },
   );
+}
+
+function hashPrivateIdentity(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function isMissingFileError(error: unknown): boolean {

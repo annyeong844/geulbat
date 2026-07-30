@@ -36,6 +36,8 @@ interface ScriptedWorker {
   starts: Array<Record<string, unknown>>;
   /** 받은 session/interact params — 재전송 여부와 동일성의 관측점. */
   interactions: Array<Record<string, unknown>>;
+  /** 받은 session/waitInitial params — output-ref claim gate의 관측점. */
+  waits: Array<Record<string, unknown>>;
   cancelledRequestIds: JsonRpcId[];
   initialWaitObserved: Promise<void>;
   connections: number;
@@ -57,6 +59,7 @@ async function makeScriptedWorker(
     stateRoot,
     starts: [],
     interactions: [],
+    waits: [],
     cancelledRequestIds: [],
     initialWaitObserved: new Promise((resolve) => {
       observeInitialWait = resolve;
@@ -133,6 +136,7 @@ async function makeScriptedWorker(
           continue;
         }
         if (method === COMMAND_HOST_METHODS.waitInitial) {
+          state.waits.push(params as Record<string, unknown>);
           observeInitialWait();
           if (options.holdInitialWait === true) {
             continue;
@@ -356,6 +360,100 @@ void test('deferred output release fails closed before crossing an older worker 
   assert.equal(worker.starts.length, 0, 'no command crossed the old boundary');
 });
 
+void test('raw output reference claims fail closed against an older worker', async (t) => {
+  const worker = await makeScriptedWorker(t, {
+    dropFirstInteractResponse: false,
+  });
+  const client = createCommandHostClient({
+    config: { inlineMaxBytes: 1024, tailRingBytes: 4096 },
+  });
+  t.after(async () => {
+    await client.closeAll();
+  });
+
+  const claimed = await client.waitForInitialResult({
+    stateRoot: worker.stateRoot,
+    outputRef: 'command-output:system/raw-claim',
+    requiresOutputRef: true,
+  });
+
+  assert.equal(claimed.ok, false);
+  if (!claimed.ok) {
+    assert.equal(
+      claimed.message,
+      'command-host worker does not support raw output reference claims.',
+    );
+  }
+  assert.equal(worker.waits.length, 0, 'no claim crossed the old boundary');
+});
+
+void test('a capable worker receives the raw output reference claim', async (t) => {
+  const worker = await makeScriptedWorker(t, {
+    dropFirstInteractResponse: false,
+    capabilities: {
+      rawOutputPages: true,
+    },
+  });
+  const client = createCommandHostClient({
+    config: { inlineMaxBytes: 1024, tailRingBytes: 4096 },
+  });
+  t.after(async () => {
+    await client.closeAll();
+  });
+
+  const claimed = await client.waitForInitialResult({
+    stateRoot: worker.stateRoot,
+    outputRef: 'command-output:system/raw-claim',
+    requiresOutputRef: true,
+  });
+
+  assert.equal(claimed.ok, false);
+  if (!claimed.ok) {
+    assert.equal(claimed.reasonCode, 'not_found');
+  }
+  assert.equal(worker.waits.length, 1);
+  assert.equal(worker.waits[0]?.['requiresOutputRef'], true);
+});
+
+void test('raw output pages fail closed before crossing an older worker boundary', async (t) => {
+  const worker = await makeScriptedWorker(t, {
+    dropFirstInteractResponse: false,
+  });
+  const client = createCommandHostClient({
+    config: { inlineMaxBytes: 1024, tailRingBytes: 4096 },
+  });
+  t.after(async () => {
+    await client.closeAll();
+  });
+
+  const observed = await client.interact({
+    stateRoot: worker.stateRoot,
+    threadId: THREAD,
+    owner: 'system',
+    outputRef: 'command-output:system/raw-page',
+    page: {
+      stream: 'stdout',
+      offsetBytes: 0,
+      limitBytes: 3,
+      encoding: 'base64',
+    },
+  });
+
+  assert.equal(observed.ok, false);
+  if (!observed.ok) {
+    assert.equal(observed.reasonCode, 'invalid_args');
+    assert.equal(
+      observed.message,
+      'command-host worker does not support raw output pages.',
+    );
+  }
+  assert.equal(
+    worker.interactions.length,
+    0,
+    'no raw page request crossed the old boundary',
+  );
+});
+
 void test('idempotent start fails closed before crossing an older worker boundary', async (t) => {
   const worker = await makeScriptedWorker(t, {
     dropFirstInteractResponse: false,
@@ -434,6 +532,49 @@ void test('initial stdin fails closed before crossing an older worker boundary',
   );
 });
 
+void test('raw initial stdin fails closed before crossing a text-only worker boundary', async (t) => {
+  const worker = await makeScriptedWorker(t, {
+    dropFirstInteractResponse: false,
+    capabilities: {
+      deferredOutputRelease: true,
+      idempotentStartByInvocation: true,
+      initialStdinOnStart: true,
+      losslessStdio: true,
+      prePersistenceOutputRedaction: true,
+    },
+  });
+  const client = createCommandHostClient({
+    config: { inlineMaxBytes: 1024, tailRingBytes: 4096 },
+  });
+  t.after(async () => {
+    await client.closeAll();
+  });
+
+  const started = await client.start({
+    executable: process.execPath,
+    args: ['-e', 'process.stdin.resume()'],
+    cwd: worker.stateRoot,
+    env: process.env,
+    stateRoot: worker.stateRoot,
+    threadId: THREAD,
+    owner: 'system',
+    streamMode: 'lossless',
+    requiresDeferredOutputRelease: true,
+    requiresIdempotentStart: true,
+    runId: 'run-raw-initial-stdin-gate',
+    callId: 'call-raw-initial-stdin-gate',
+    stdinMode: 'open',
+    initialStdin: Buffer.from([0x00, 0xff]),
+  });
+
+  assert.equal(started.ok, false);
+  assert.equal(
+    worker.starts.length,
+    0,
+    'no raw bytes crossed the old boundary',
+  );
+});
+
 void test('a capable worker receives the exact redaction and lossless start contract', async (t) => {
   const worker = await makeScriptedWorker(t, {
     dropFirstInteractResponse: false,
@@ -443,6 +584,7 @@ void test('a capable worker receives the exact redaction and lossless start cont
       initialStdinOnStart: true,
       losslessStdio: true,
       prePersistenceOutputRedaction: true,
+      rawInitialStdinOnStart: true,
     },
   });
   const client = createCommandHostClient({
@@ -483,6 +625,52 @@ void test('a capable worker receives the exact redaction and lossless start cont
     exactMarkers: ['private-token'],
     replacement: '[redacted]',
   });
+});
+
+void test('a raw-stdin-capable worker receives exact bytes as base64', async (t) => {
+  const worker = await makeScriptedWorker(t, {
+    dropFirstInteractResponse: false,
+    capabilities: {
+      deferredOutputRelease: true,
+      idempotentStartByInvocation: true,
+      initialStdinOnStart: true,
+      losslessStdio: true,
+      prePersistenceOutputRedaction: true,
+      rawInitialStdinOnStart: true,
+    },
+  });
+  const client = createCommandHostClient({
+    config: { inlineMaxBytes: 1024, tailRingBytes: 4096 },
+  });
+  t.after(async () => {
+    await client.closeAll();
+  });
+
+  const bytes = Buffer.from([0x00, 0xff, 0x41, 0x00]);
+  const started = await client.start({
+    executable: process.execPath,
+    args: ['-e', 'process.stdin.resume()'],
+    cwd: worker.stateRoot,
+    env: process.env,
+    stateRoot: worker.stateRoot,
+    threadId: THREAD,
+    owner: 'system',
+    streamMode: 'lossless',
+    requiresDeferredOutputRelease: true,
+    requiresIdempotentStart: true,
+    runId: 'run-raw-initial-stdin-wire',
+    callId: 'call-raw-initial-stdin-wire',
+    stdinMode: 'open',
+    initialStdin: bytes,
+  });
+
+  assert.equal(started.ok, true);
+  assert.equal(worker.starts.length, 1);
+  assert.equal(
+    worker.starts[0]?.['initialStdinBase64'],
+    bytes.toString('base64'),
+  );
+  assert.equal(worker.starts[0]?.['initialStdin'], undefined);
 });
 
 void test('the worker link translates an aborted wait into one cancel request', async (t) => {

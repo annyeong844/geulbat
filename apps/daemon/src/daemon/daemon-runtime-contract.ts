@@ -5,6 +5,7 @@ import type { ProviderNativeWebSearchRuntime } from './llm/provider/codex-web-se
 import type { ReactBundleStructuredOutputIngressPolicy } from './agent/react-bundle-structured-output-ingress-policy.js';
 import type { AgentLoopImplementationAdmission } from './agent/loop-implementation-admission.js';
 import type { ResponsesWebSocketSessionStore } from './llm/provider/transport/responses-websocket-cache.js';
+import type { ResponsesDurableRequestRecovery } from './llm/provider/transport/responses-durable-request.js';
 import type { ActiveRunStore } from './sessions/active-runs.js';
 import type { SandboxAttemptStore } from './sandbox/attempt-store.js';
 import type { ApprovalGrantStore } from './tools/approval-grants.js';
@@ -54,6 +55,7 @@ import type {
 import type { PlanningWorkflowStore } from './sessions/planning-workflow-store.js';
 import type { GoalStore } from './sessions/goal-store.js';
 import type { AgentLoopMemoryPort } from './agent/memory/compaction-loop.js';
+import type { PublicHttpReadRuntime } from './utils/public-http-read-port.js';
 import type { HostCommandRuntime } from '../command-host/contract.js';
 
 export type AgentMemoryIndex = Pick<
@@ -68,7 +70,7 @@ export interface StartSubagentBackgroundRunArgs {
   parentRunId: RunId;
   ownerThreadId: ThreadId;
   stateRoot: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   parentRunState: ToolRunState;
   runtimeServices: AgentRuntimeServices;
   launchReservation?: SubagentLaunchReservation;
@@ -132,6 +134,9 @@ export interface AgentRuntimeAgentServices {
 
 interface AgentRuntimeProviderServices {
   authRuntime: ProviderAuthRuntimeStore;
+  // 런 채널 제품 배선은 항상 제공하지만, agent-loop 전용 테스트/임베더는
+  // 이 사용자 제어 capability를 구성하지 않아도 된다.
+  durableRequestRecovery?: ResponsesDurableRequestRecovery;
   nativeWebSearch?: ProviderNativeWebSearchRuntime;
   requestOptions: ProviderRequestOptions;
   webSocketSessions: ResponsesWebSocketSessionStore;
@@ -184,6 +189,7 @@ export interface AgentRuntimeServices {
    * 조립이 호스트를 구성할 때 쓴 값을 그대로 넘긴다 — env를 다시 읽어 추정하지 않는다.
    */
   hostCommandInlineMaxBytes: number;
+  publicHttpRead: PublicHttpReadRuntime;
   imageGeneration: ImageGenerationRuntime;
   videoGeneration: VideoGenerationRuntime;
   memoryIndex: AgentMemoryIndex;

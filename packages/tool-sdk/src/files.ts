@@ -162,6 +162,8 @@ export function readListFilesInput(
   const maxDepth = value['maxDepth'];
   const excludeNames = value['excludeNames'];
   const entryTypes = value['entryTypes'];
+  let decodedExcludeNames: string[] | undefined;
+  let decodedEntryTypes: Array<'file' | 'directory'> | undefined;
   if (
     path !== undefined &&
     (typeof path !== 'string' || path.trim().length === 0)
@@ -177,29 +179,43 @@ export function readListFilesInput(
   if (maxDepth !== undefined && recursive !== true) {
     return { ok: false, message: 'maxDepth requires recursive to be true' };
   }
-  if (
-    excludeNames !== undefined &&
-    (!Array.isArray(excludeNames) ||
-      !excludeNames.every(
-        (entry) => typeof entry === 'string' && entry.trim().length > 0,
-      ))
-  ) {
-    return {
-      ok: false,
-      message: 'excludeNames must be an array of non-empty strings',
-    };
+  if (excludeNames !== undefined) {
+    if (!Array.isArray(excludeNames)) {
+      return {
+        ok: false,
+        message: 'excludeNames must be an array of non-empty strings',
+      };
+    }
+    decodedExcludeNames = [];
+    for (const entry of excludeNames as unknown[]) {
+      if (typeof entry !== 'string' || entry.trim().length === 0) {
+        return {
+          ok: false,
+          message: 'excludeNames must be an array of non-empty strings',
+        };
+      }
+      decodedExcludeNames.push(entry);
+    }
   }
-  if (
-    entryTypes !== undefined &&
-    (!Array.isArray(entryTypes) ||
-      entryTypes.length === 0 ||
-      !entryTypes.every((entry) => entry === 'file' || entry === 'directory'))
-  ) {
-    return {
-      ok: false,
-      message:
-        'entryTypes must be a non-empty array containing file or directory',
-    };
+  if (entryTypes !== undefined) {
+    if (!Array.isArray(entryTypes) || entryTypes.length === 0) {
+      return {
+        ok: false,
+        message:
+          'entryTypes must be a non-empty array containing file or directory',
+      };
+    }
+    decodedEntryTypes = [];
+    for (const entry of entryTypes as unknown[]) {
+      if (entry !== 'file' && entry !== 'directory') {
+        return {
+          ok: false,
+          message:
+            'entryTypes must be a non-empty array containing file or directory',
+        };
+      }
+      decodedEntryTypes.push(entry);
+    }
   }
   return {
     ok: true,
@@ -207,10 +223,12 @@ export function readListFilesInput(
       ...(path === undefined ? {} : { path }),
       ...(recursive === undefined ? {} : { recursive }),
       ...(maxDepth === undefined ? {} : { maxDepth }),
-      ...(excludeNames === undefined ? {} : { excludeNames }),
-      ...(entryTypes === undefined
+      ...(decodedExcludeNames === undefined
         ? {}
-        : { entryTypes: [...entryTypes] as Array<'file' | 'directory'> }),
+        : { excludeNames: decodedExcludeNames }),
+      ...(decodedEntryTypes === undefined
+        ? {}
+        : { entryTypes: decodedEntryTypes }),
     },
   };
 }

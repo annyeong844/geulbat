@@ -5,6 +5,12 @@ export interface VisualizeWidgetView {
   mode: 'svg' | 'html';
   code: string;
   title: string | null;
+  planStepStates?: readonly VisualizePlanStepState[];
+}
+
+export interface VisualizePlanStepState {
+  id: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
 }
 
 // visualize 인라인 위젯 문서 — 아티팩트와 같은 iframe 런타임을 타지만
@@ -172,6 +178,59 @@ const VISUALIZE_WIDGET_STYLE = `
   .geulbat-visualize-root a {
     color: var(--series-1);
   }
+  [data-plan-step-id] {
+    transition:
+      opacity 160ms ease,
+      filter 160ms ease;
+  }
+  [data-plan-step-id][data-plan-status='pending'] {
+    opacity: 0.58;
+  }
+  [data-plan-step-id][data-plan-status='in_progress'] {
+    opacity: 1;
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--series-1) 55%, transparent));
+    animation: geulbat-plan-step-pulse 1.4s ease-in-out infinite;
+  }
+  [data-plan-step-id][data-plan-status='completed'] {
+    opacity: 0.84;
+    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--series-2) 42%, transparent));
+  }
+  [data-plan-step-id][data-plan-status='failed'] {
+    opacity: 1;
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--series-8) 55%, transparent));
+  }
+  [data-plan-step-id][data-plan-status='in_progress'] rect,
+  [data-plan-step-id][data-plan-status='in_progress'] circle,
+  [data-plan-step-id][data-plan-status='in_progress'] path {
+    stroke: var(--series-1);
+    stroke-width: 2;
+  }
+  [data-plan-step-id][data-plan-status='completed'] rect,
+  [data-plan-step-id][data-plan-status='completed'] circle,
+  [data-plan-step-id][data-plan-status='completed'] path {
+    stroke: var(--series-2);
+  }
+  [data-plan-step-id][data-plan-status='failed'] rect,
+  [data-plan-step-id][data-plan-status='failed'] circle,
+  [data-plan-step-id][data-plan-status='failed'] path {
+    stroke: var(--series-8);
+    stroke-width: 2;
+  }
+  @keyframes geulbat-plan-step-pulse {
+    0%,
+    100% {
+      filter: drop-shadow(0 0 3px color-mix(in srgb, var(--series-1) 35%, transparent));
+    }
+    50% {
+      filter: drop-shadow(0 0 9px color-mix(in srgb, var(--series-1) 68%, transparent));
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    [data-plan-step-id] {
+      transition: none;
+      animation: none !important;
+    }
+  }
 `;
 
 // #arrow 마커 정의 — 위젯 SVG가 marker-end="url(#arrow)"로 바로 쓸 수 있게
@@ -310,8 +369,56 @@ export function buildVisualizeWidgetDocument(
     '<body>',
     VISUALIZE_WIDGET_SVG_DEFS,
     buildVisualizeWidgetBody(view, options.instant === true),
+    applyPlanStepBindings(view.planStepStates),
     '</body>',
     '</html>',
+  ].join('\n');
+}
+
+function applyPlanStepBindings(
+  stepStates: readonly VisualizePlanStepState[] | undefined,
+): string {
+  if (stepStates === undefined || stepStates.length === 0) {
+    return '';
+  }
+  const serializedStates = JSON.stringify(stepStates).replace(/</gu, '\\u003C');
+  return [
+    '<script>',
+    `(() => {
+  const root = document.querySelector('.geulbat-visualize-root');
+  if (!root) {
+    return;
+  }
+  const stepStates = new Map(
+    ${serializedStates}.map((step) => [step.id, step.status]),
+  );
+  const apply = () => {
+    const boundIds = new Set();
+    for (const node of root.querySelectorAll('[data-plan-step-id]')) {
+      const stepId = node.getAttribute('data-plan-step-id');
+      const status = stepId === null ? undefined : stepStates.get(stepId);
+      if (stepId === null || status === undefined) {
+        node.removeAttribute('data-plan-status');
+        node.removeAttribute('aria-current');
+        continue;
+      }
+      boundIds.add(stepId);
+      node.setAttribute('data-plan-status', status);
+      if (status === 'in_progress') {
+        node.setAttribute('aria-current', 'step');
+      } else {
+        node.removeAttribute('aria-current');
+      }
+    }
+    root.setAttribute(
+      'data-plan-binding-state',
+      boundIds.size === stepStates.size ? 'complete' : 'incomplete',
+    );
+  };
+  apply();
+  new MutationObserver(apply).observe(root, { childList: true, subtree: true });
+})();`,
+    '</script>',
   ].join('\n');
 }
 

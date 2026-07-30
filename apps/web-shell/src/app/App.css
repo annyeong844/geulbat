@@ -9,6 +9,7 @@
 @import './styles/shell.css';
 @import './styles/rail.css';
 @import './styles/editor.css';
+@import './styles/git-review.css';
 @import './styles/format-toolbar.css';
 @import './styles/media-viewer.css';
 @import './styles/settings.css';

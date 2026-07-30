@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  guardedLookupPublicAddress,
   isUnsafeWebFetchAddress,
   parseWebFetchHttpUrl,
 } from './web-fetch-url-guard.js';
@@ -74,22 +73,4 @@ void test('isUnsafeWebFetchAddress rejects loopback, private, link-local, multic
     isUnsafeWebFetchAddress('2606:2800:220:1:248:1893:25c8:1946'),
     false,
   );
-});
-
-void test('guardedLookupPublicAddress rejects unsafe resolved addresses before connect', async () => {
-  await assert.rejects(
-    () =>
-      guardedLookupPublicAddress('example.test', {
-        lookup: async () => [{ address: '127.0.0.1', family: 4 }],
-      }),
-    /unsafe network address/,
-  );
-});
-
-void test('guardedLookupPublicAddress returns a public address from injected DNS lookup', async () => {
-  const result = await guardedLookupPublicAddress('example.test', {
-    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
-  });
-
-  assert.deepEqual(result, { address: '93.184.216.34', family: 4 });
 });

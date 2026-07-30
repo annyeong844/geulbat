@@ -27,6 +27,14 @@ void test('classifyStreamError preserves explicit stream categories', () => {
     }),
     'llm_provider_transition_required',
   );
+  assert.equal(
+    classifyStreamError(
+      Object.assign(new Error('provider request outcome is unknown'), {
+        llmCode: 'llm_provider_request_outcome_unknown',
+      }),
+    ),
+    'llm_provider_request_outcome_unknown',
+  );
 });
 
 void test('classifyStreamError maps provider status and code shapes', () => {

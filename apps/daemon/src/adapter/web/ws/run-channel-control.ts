@@ -1,7 +1,10 @@
 import type WebSocket from 'ws';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
-import type { RunChildCancelRequest } from '@geulbat/protocol/run-channel';
+import type {
+  RunChildCancelRequest,
+  RunProviderRequestRecoveryRequest,
+} from '@geulbat/protocol/run-channel';
 
 import { sendError, sendMessage } from './run-channel-socket.js';
 import type { RunChannelControlContext } from './run-channel-runtime-context.js';
@@ -348,5 +351,56 @@ export function handleRunInterjectFlush(
     action: 'run.interject.flush',
     ok: true,
     flushed: result.flushed,
+  });
+}
+
+// provider 요청 결과를 확인할 수 없는 경우의 명시적 복구. 런 채널 인증으로
+// 얻은 computer session identity를 감사 주체로 쓰며, 활성 run이 있는 동안은
+// 좌표를 건드리지 않는다.
+export async function handleRunProviderRequestRecovery(
+  socket: WebSocket,
+  requestId: string,
+  request: RunProviderRequestRecoveryRequest,
+  controlContext: RunChannelControlContext,
+  authorizedByComputerSessionId: string,
+): Promise<void> {
+  const activeRun = controlContext.activeRuns.getRunByThreadId(
+    request.threadId,
+  );
+  if (activeRun !== undefined) {
+    sendError(
+      socket,
+      requestId,
+      409,
+      'conflict_active_run',
+      'the thread still has an active run',
+    );
+    return;
+  }
+
+  const recovered =
+    await controlContext.provider.durableRequestRecovery.recoverOutcomeUnknown({
+      providerSessionId: request.threadId,
+      authorizedByComputerSessionId,
+      acknowledgePossibleDuplicateProviderWork:
+        request.acknowledgePossibleDuplicateProviderWork,
+    });
+  if (!recovered.ok) {
+    sendError(
+      socket,
+      requestId,
+      recovered.code === 'not_found' ? 404 : 409,
+      recovered.code,
+      recovered.message,
+    );
+    return;
+  }
+
+  sendMessage(socket, {
+    type: 'run.control',
+    requestId,
+    action: 'run.provider_request.recover',
+    ok: true,
+    disposition: recovered.disposition,
   });
 }

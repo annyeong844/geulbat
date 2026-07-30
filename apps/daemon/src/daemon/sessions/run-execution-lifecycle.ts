@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { GoalRef, GoalSnapshot } from '@geulbat/protocol/goal';
 import type { RunId, ThreadId } from '@geulbat/protocol/ids';
 import {
-  isSamePlanRenderingStamp,
+  isSameApprovedPlanRef,
   type ApprovedPlanRef,
   type PlanDraftV1,
   type PlanModeDepth,
@@ -612,7 +612,7 @@ function sameApprovedPlanRef(
   if (left === undefined || right === undefined) {
     return left === right;
   }
-  return isSamePlanRenderingStamp(left, right);
+  return isSameApprovedPlanRef(left, right);
 }
 
 function hasPendingInterject(checkpoint: RunCheckpoint): boolean {

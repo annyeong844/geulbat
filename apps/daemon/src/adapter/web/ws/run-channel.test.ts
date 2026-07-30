@@ -194,7 +194,7 @@ void test('run-channel preserves requestId when working-directory admission thro
         const response = await sendAndWaitForError(socket, {
           type: 'run.start',
           requestId: 'start-working-directory-throw',
-          request: { prompt: 'hello' },
+          request: { prompt: 'hello', workingDirectory: '' },
         });
 
         assert.deepEqual(response, {

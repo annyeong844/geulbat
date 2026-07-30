@@ -116,6 +116,79 @@ void test('assistant uses the cross-platform Computer browser for cwd when brows
   await act(async () => renderer.unmount());
 });
 
+void test('assistant can detach the working directory and show chat mode', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ root: 'computer', tree: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  let selectedPath: string | null = 'home/writer';
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <Assistant
+        {...createAssistantProps({
+          workspace: {
+            workingDirectory: 'home/writer',
+            browseEnabled: true,
+            browsePath: 'home/writer',
+            browseStartPath: 'home/writer',
+            browseShortcuts: [],
+            onSelectWorkingDirectory: (path) => {
+              selectedPath = path;
+            },
+          },
+        })}
+      />,
+    );
+  });
+
+  act(() => {
+    renderer.root
+      .findAllByType('button')
+      .find((button) => button.props.title === '첨부와 도구')
+      ?.props.onClick();
+  });
+  await act(async () => {
+    findButtonByText(renderer, '시작 위치')?.props.onClick();
+  });
+
+  const noFolder = findButtonByText(renderer, '작업 폴더 없이 대화');
+  assert.ok(noFolder);
+  await act(async () => {
+    noFolder.props.onClick();
+  });
+  assert.equal(selectedPath, null);
+  assert.equal(renderer.root.findAllByProps({ role: 'dialog' }).length, 0);
+
+  await act(async () => {
+    renderer.update(
+      <Assistant
+        {...createAssistantProps({
+          workspace: {
+            workingDirectory: null,
+            browseEnabled: true,
+            browsePath: 'home/writer',
+            browseStartPath: 'home/writer',
+            browseShortcuts: [],
+            onSelectWorkingDirectory: (path) => {
+              selectedPath = path;
+            },
+          },
+        })}
+      />,
+    );
+  });
+  assert.match(renderedText(renderer.root), /작업 폴더 없음/u);
+
+  await act(async () => renderer.unmount());
+});
+
 void test('assistant keeps the native picker single-flight until the selection settles', async () => {
   let chooseCount = 0;
   let finishSelection: (() => void) | undefined;

@@ -10,6 +10,7 @@ export const VISUALIZE_TOOL_NAME = 'visualize';
 
 export type VisualizeWidgetView = RuntimeVisualizeWidgetView & {
   planStamp?: PlanRenderingStamp;
+  planStepIds?: string[];
 };
 
 export function readVisualizeWidgetViewFromToolArgs(
@@ -27,11 +28,26 @@ export function readVisualizeWidgetViewFromToolArgs(
       ? args.title.trim()
       : null;
   const planStamp = readPlanRenderingStamp(args.planStamp);
+  let planStepIds: string[] | null = null;
+  if (Array.isArray(args.planStepIds)) {
+    const ids: string[] = [];
+    for (const value of args.planStepIds) {
+      if (typeof value !== 'string' || value.trim() === '') {
+        return null;
+      }
+      ids.push(value.trim());
+    }
+    if (ids.length === 0 || new Set(ids).size !== ids.length) {
+      return null;
+    }
+    planStepIds = ids;
+  }
   return {
     mode: detectVisualizeWidgetMode(code),
     code,
     title,
     ...(planStamp === null ? {} : { planStamp }),
+    ...(planStepIds === null ? {} : { planStepIds }),
   };
 }
 

@@ -73,6 +73,7 @@ export interface HostCommandOutputPage {
   hasMore: boolean;
   nextOffsetBytes: number | null;
   content: string;
+  contentEncoding?: 'base64';
   contentStartOffset?: number;
   earliestAvailableOffset?: number;
 }
@@ -405,6 +406,7 @@ export async function readHostCommandOutputPage(args: {
         stream: HostCommandOutputStream;
         offsetBytes: number;
         limitBytes: number;
+        encoding?: 'base64';
       }
     | undefined;
   inlineMaxBytes: number;
@@ -427,7 +429,7 @@ export async function readHostCommandOutputPage(args: {
       message: `limitBytes exceeds the configured inline result budget of ${args.inlineMaxBytes} bytes.`,
     };
   }
-  return await readUtf8OutputPage({
+  return await readOutputPage({
     path:
       args.page.stream === 'stdout'
         ? args.fullOutputAvailable === true
@@ -448,6 +450,7 @@ export async function readHostCommandFullOutputArchivePage(args: {
   archivedBytes: number;
   totalBytes: number;
   inlineMaxBytes: number;
+  encoding?: 'base64';
 }): Promise<
   | { ok: true; value: HostCommandOutputPage }
   | {
@@ -493,13 +496,14 @@ export async function readHostCommandFullOutputArchivePage(args: {
       message: getErrorMessage(error),
     };
   }
-  return await readUtf8OutputPage({
+  return await readOutputPage({
     path,
     stream: args.stream,
     offsetBytes: args.offsetBytes,
     limitBytes: args.limitBytes,
     availableBytes: args.archivedBytes,
     totalBytes: args.totalBytes,
+    ...(args.encoding === undefined ? {} : { encoding: args.encoding }),
   });
 }
 
@@ -590,7 +594,10 @@ export function snapshotFromHostCommandMetadata(
     stderrBytes: metadata.stderrBytes,
     stdoutChars: metadata.stdoutChars,
     stderrChars: metadata.stderrChars,
-    durationMs: (metadata.finishedAtMs ?? Date.now()) - metadata.startedAtMs,
+    durationMs: Math.max(
+      0,
+      (metadata.finishedAtMs ?? Date.now()) - metadata.startedAtMs,
+    ),
     firstOutputAfterMs: metadata.firstOutputAfterMs,
     revision: metadata.revision,
     stdinOpen: false,
@@ -780,13 +787,14 @@ async function readDirectoryNames(path: string): Promise<string[]> {
   }
 }
 
-async function readUtf8OutputPage(args: {
+async function readOutputPage(args: {
   path: string;
   stream: HostCommandOutputStream;
   offsetBytes: number;
   limitBytes: number;
   availableBytes?: number;
   totalBytes?: number;
+  encoding?: 'base64';
 }): Promise<
   | { ok: true; value: HostCommandOutputPage }
   | {
@@ -814,6 +822,35 @@ async function readUtf8OutputPage(args: {
       };
     }
     const offsetBytes = Math.min(args.offsetBytes, availableBytes);
+    if (args.encoding === 'base64') {
+      const requestedBytes = Math.min(
+        args.limitBytes,
+        availableBytes - offsetBytes,
+      );
+      const buffer = Buffer.allocUnsafe(requestedBytes);
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        requestedBytes,
+        offsetBytes,
+      );
+      const endOffsetBytes = offsetBytes + bytesRead;
+      const hasMore = endOffsetBytes < totalBytes;
+      return {
+        ok: true,
+        value: {
+          stream: args.stream,
+          offsetBytes,
+          endOffsetBytes,
+          totalBytes,
+          limitBytes: args.limitBytes,
+          hasMore,
+          nextOffsetBytes: hasMore ? endOffsetBytes : null,
+          content: buffer.subarray(0, bytesRead).toString('base64'),
+          contentEncoding: 'base64',
+        },
+      };
+    }
     if (offsetBytes < availableBytes) {
       const first = Buffer.allocUnsafe(1);
       await handle.read(first, 0, 1, offsetBytes);

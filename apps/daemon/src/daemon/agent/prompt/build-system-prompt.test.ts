@@ -261,6 +261,20 @@ void test('buildSystemPrompt describes a general agent and the actual host bound
   assert.doesNotMatch(prompt, /adult readership/);
 });
 
+void test('buildSystemPrompt describes cwd-free chat mode without a hidden root fallback', () => {
+  const prompt = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+  });
+
+  assert.match(prompt, /No run working directory is attached/u);
+  assert.match(prompt, /Treat this as chat mode/u);
+  assert.match(prompt, /do not invent a cwd/u);
+  assert.match(prompt, /Relative file and host-command paths are unavailable/u);
+  assert.match(prompt, /explicit absolute host path may still be used/u);
+  assert.doesNotMatch(prompt, /user-selected run cwd is/u);
+});
+
 void test('buildSystemPrompt gives subagents a compact role prompt and truthful computer capability', () => {
   const explorerPrompt = buildSystemPrompt({
     profile: 'explorer',
@@ -314,7 +328,8 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
   assert.match(workerPrompt, /worker subagent/);
   assert.match(workerPrompt, /discovery -> read -> mutate/);
   assert.match(workerPrompt, /File tools use the host filesystem/);
-  assert.match(
+  assert.match(workerPrompt, /No run working directory is attached/);
+  assert.doesNotMatch(
     workerPrompt,
     /Relative paths start from the run working directory/,
   );
@@ -438,14 +453,21 @@ void test('plan mode guidance binds trusted host approval without manual mode sw
   assert.match(on, /one focused ask_user decision per turn/u);
   assert.match(
     on,
-    /continue with the next most consequential unresolved issue/u,
+    /promptly ask the next most consequential unresolved issue/u,
   );
   assert.match(on, /do not call propose_plan until/u);
+  assert.match(on, /purpose understanding_confirmation/u);
+  assert.match(on, /what we are making/u);
+  assert.match(on, /included and excluded scope/u);
+  assert.match(on, /the confirmation itself is not a PlanDraftV1 decision/u);
   assert.match(on, /Do not ask for permission to inspect/u);
   assert.match(on, /confirm review-only versus modification at most once/u);
   assert.match(on, /Final prose by itself does not complete planning/u);
   assert.match(on, /title and labels in the user's language/u);
-  assert.match(on, /user's decision, the work flow, and the expected outcome/u);
+  assert.match(
+    on,
+    /user's settled decisions, the work flow, and the expected outcome/u,
+  );
   assert.match(on, /raw ids, digests, internal state names/u);
   assert.match(on, /concise user-facing goal/u);
   assert.match(on, /secondary metadata beneath the goal/u);
@@ -466,27 +488,85 @@ void test('plan mode guidance also reaches delegated sub-agents', () => {
   }
 });
 
-void test('standard and deep planning keep interrogation policy independent from presentation', () => {
-  const standard = buildSystemPrompt({
-    profile: 'root',
-    computerSessionAvailable: true,
-    planMode: { intensity: 'visual', depth: 'standard' },
-  });
-  const deep = buildSystemPrompt({
-    profile: 'root',
-    computerSessionAvailable: true,
-    planMode: { intensity: 'quiet', depth: 'deep' },
-  });
+void test('all four plan modes keep interview depth independent from presentation', () => {
+  const prompts = {
+    standardQuiet: buildSystemPrompt({
+      profile: 'root',
+      computerSessionAvailable: true,
+      planMode: { intensity: 'quiet', depth: 'standard' },
+    }),
+    standardVisual: buildSystemPrompt({
+      profile: 'root',
+      computerSessionAvailable: true,
+      planMode: { intensity: 'visual', depth: 'standard' },
+    }),
+    deepQuiet: buildSystemPrompt({
+      profile: 'root',
+      computerSessionAvailable: true,
+      planMode: { intensity: 'quiet', depth: 'deep' },
+    }),
+    deepVisual: buildSystemPrompt({
+      profile: 'root',
+      computerSessionAvailable: true,
+      planMode: { intensity: 'visual', depth: 'deep' },
+    }),
+  };
 
-  assert.match(standard, /This is standard planning/u);
-  assert.match(standard, /This is visual planning/u);
-  assert.match(deep, /This is deep planning/u);
+  for (const prompt of [prompts.standardQuiet, prompts.standardVisual]) {
+    assert.match(prompt, /This is standard planning/u);
+    assert.doesNotMatch(prompt, /This is deep planning/u);
+    assert.doesNotMatch(prompt, /purpose understanding_confirmation/u);
+  }
+  for (const prompt of [prompts.deepQuiet, prompts.deepVisual]) {
+    assert.match(prompt, /This is deep planning/u);
+    assert.doesNotMatch(prompt, /This is standard planning/u);
+  }
+  for (const prompt of [prompts.standardQuiet, prompts.deepQuiet]) {
+    assert.match(prompt, /This is compact planning/u);
+    assert.doesNotMatch(prompt, /This is visual planning/u);
+  }
+  for (const prompt of [prompts.standardVisual, prompts.deepVisual]) {
+    assert.match(prompt, /This is visual planning/u);
+    assert.match(prompt, /visualize\.planStepIds/u);
+    assert.match(prompt, /data-plan-step-id/u);
+    assert.doesNotMatch(prompt, /This is compact planning/u);
+  }
+
+  const deep = prompts.deepVisual;
   assert.match(
     deep,
-    /continue with the next most consequential unresolved issue/u,
+    /promptly ask the next most consequential unresolved issue/u,
   );
+  assert.match(
+    deep,
+    /do not finish an exhaustive repository audit before asking it/u,
+  );
+  assert.match(
+    deep,
+    /ask the first one immediately before further inspection/u,
+  );
+  assert.match(deep, /do not research a preference only the user can decide/u);
+  assert.match(deep, /call ask_user in the same model round/u);
+  assert.match(deep, /do not reopen the same owner merely to reconfirm it/u);
+  assert.match(deep, /Never announce that investigation is complete/u);
+  assert.match(
+    deep,
+    /explicitly asks you to stop questioning and make a best-effort plan/u,
+  );
+  assert.match(deep, /responsible owner, current behavior, and verification/u);
+  assert.match(deep, /exact command syntax merely to polish/u);
+  assert.match(
+    deep,
+    /call propose_plan as soon as that minimum evidence exists/u,
+  );
+  assert.match(deep, /then promptly ask the next most consequential/u);
+  assert.match(deep, /Keep prose around ask_user brief/u);
+  assert.match(deep, /do not repeat a repository summary/u);
   assert.match(deep, /Never repeat settled questions/u);
-  assert.match(deep, /This is compact planning/u);
+  assert.match(deep, /present a fresh understanding checkpoint/u);
+  assert.match(deep, /If the user confirms in the next turn/u);
+  assert.match(prompts.standardVisual, /make it call sendPrompt\(\)/u);
+  assert.match(prompts.standardVisual, /Never use a diagram click to approve/u);
 });
 
 void test('approved plan prompt pins exact identity and immutable step structure', () => {

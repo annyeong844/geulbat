@@ -739,11 +739,29 @@ void test('shutdown reports Busy while active work exists (§6.3)', async (t) =>
     'Busy: active work exists',
   );
 
-  const terminal = await client.request(COMMAND_HOST_METHODS.interact, {
+  let unsubscribeSettled = (): void => undefined;
+  const settled = new Promise<void>((resolve) => {
+    unsubscribeSettled = harness.core.onSettled(resolve);
+  });
+  t.after(unsubscribeSettled);
+  const closedStdin = await client.request(COMMAND_HOST_METHODS.interact, {
     stateRoot: harness.stateRoot,
     threadId: thread,
     outputRef: started.outputRef,
     closeStdin: true,
+  });
+  assert.equal(
+    (closedStdin['result'] as { ok: boolean } | undefined)?.ok,
+    true,
+  );
+  await settled;
+  unsubscribeSettled();
+
+  const terminal = await client.request(COMMAND_HOST_METHODS.interact, {
+    stateRoot: harness.stateRoot,
+    threadId: thread,
+    outputRef: started.outputRef,
+    yieldTimeMs: 0,
   });
   assert.equal(
     (

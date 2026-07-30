@@ -186,6 +186,105 @@ void test('regeneratePromptAction trims the stale turn and optimistically re-app
   assert.deepEqual(harness.logFailures, []);
 });
 
+void test('regeneratePromptAction reconciles outcome-unknown evidence before trimming or starting', async () => {
+  const harness = createStartActionHarness();
+  const order: string[] = [];
+
+  await regeneratePromptAction({
+    client: harness.client,
+    dispatch: harness.dispatch,
+    clearSessionError: harness.clearSessionError,
+    prompt: 'Retry only after recovery',
+    promptInputs: {
+      modelId: 'qwen3.8-max-preview',
+      selectedThreadId: THREAD_ID_VALUE,
+      permissionMode: 'basic',
+      planModeRequested: false,
+      planModeIntensity: 'visual',
+      planModeDepth: 'standard',
+      reasoningEffort: 'medium',
+      serviceTier: 'standard',
+      subagentModelRouting: { mode: 'auto' },
+    },
+    providerRequestRecoveryClient: {
+      async recoverProviderRequestOutcomeUnknown(request) {
+        order.push('recover');
+        assert.deepEqual(request, {
+          threadId: THREAD_ID_VALUE,
+          acknowledgePossibleDuplicateProviderWork: true,
+        });
+        return 'abandoned';
+      },
+    },
+    trimMessagesForRegenerate: () => {
+      order.push('trim');
+    },
+    appendOptimisticUserMessage: (prompt) => {
+      order.push(`append:${prompt}`);
+    },
+    logCommandFailure: harness.logCommandFailure,
+    prepareStartRequest: async (request) => ({
+      ...(request.threadId !== undefined ? { threadId: request.threadId } : {}),
+      ...(request.regenerate !== undefined
+        ? { regenerate: request.regenerate }
+        : {}),
+      ...(request.serviceTier !== undefined
+        ? { serviceTier: request.serviceTier }
+        : {}),
+      ...(request.subagentModelRouting !== undefined
+        ? { subagentModelRouting: request.subagentModelRouting }
+        : {}),
+      promptRef: 'run-prompt-input:22222222-2222-4222-8222-222222222222',
+    }),
+  });
+
+  assert.deepEqual(order, [
+    'recover',
+    'trim',
+    'append:Retry only after recovery',
+  ]);
+  assert.equal(harness.startedRequests.length, 1);
+});
+
+void test('regeneratePromptAction preserves the failed turn when explicit recovery is refused', async () => {
+  const harness = createStartActionHarness();
+  let trimCalls = 0;
+
+  await assert.rejects(
+    regeneratePromptAction({
+      client: harness.client,
+      dispatch: harness.dispatch,
+      clearSessionError: harness.clearSessionError,
+      prompt: 'Do not resend',
+      promptInputs: {
+        modelId: 'qwen3.8-max-preview',
+        selectedThreadId: THREAD_ID_VALUE,
+        permissionMode: 'basic',
+        planModeRequested: false,
+        planModeIntensity: 'visual',
+        planModeDepth: 'standard',
+        reasoningEffort: 'medium',
+        serviceTier: 'standard',
+        subagentModelRouting: { mode: 'auto' },
+      },
+      providerRequestRecoveryClient: {
+        async recoverProviderRequestOutcomeUnknown() {
+          throw new Error('the original provider owner is still active');
+        },
+      },
+      trimMessagesForRegenerate: () => {
+        trimCalls += 1;
+      },
+      appendOptimisticUserMessage: harness.appendOptimisticUserMessage,
+      logCommandFailure: harness.logCommandFailure,
+    }),
+    /original provider owner is still active/u,
+  );
+
+  assert.equal(trimCalls, 0);
+  assert.deepEqual(harness.startedRequests, []);
+});
+
 void test('regeneratePromptAction is a no-op without a selected thread', async () => {
   const harness = createStartActionHarness();
   let trimCalls = 0;

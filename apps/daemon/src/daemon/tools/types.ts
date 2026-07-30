@@ -145,7 +145,7 @@ export type AgentToolExecutionContext = Omit<
     runId: string;
     runOwnerKind: 'root_main' | 'child';
     stateRoot: string;
-    workingDirectory: string;
+    workingDirectory?: string;
     runState: ToolRunState | undefined;
     interjectBuffer?: ToolInterjectFlushSubscription;
     resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;

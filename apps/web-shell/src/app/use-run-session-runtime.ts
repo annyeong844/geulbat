@@ -91,6 +91,7 @@ export interface RunSessionControllerClient
       | 'subscribeThread'
       | 'planCommand'
       | 'goalCommand'
+      | 'recoverProviderRequestOutcomeUnknown'
       | 'getActiveRunForThread'
     >,
     StartRunCommandClient,
@@ -641,6 +642,10 @@ export function useRunSessionRuntime({
     cancelClient: client,
     interjectClient: client,
     frameToolClient: client,
+    providerRequestRecoveryClient: client,
+    providerRequestOutcomeUnknownRecoveryRequired:
+      selectedRunLane.activeRunView.streamErrorCode ===
+      'llm_provider_request_outcome_unknown',
     dispatch,
     appendOptimisticUserMessage,
     trimMessagesForRegenerate,

@@ -35,7 +35,7 @@ export async function handleRunTool(
 
   const activeRun = runtimeContext.activeRuns.getRunByThreadId(threadId);
   let runId: string;
-  let workingDirectory: string;
+  let workingDirectory: string | undefined;
   if (activeRun !== undefined && !activeRun.aborted) {
     runId = activeRun.runId;
     workingDirectory = activeRun.workingDirectory;
@@ -76,7 +76,7 @@ export async function handleRunTool(
   const result = await runtimeContext.artifactFrameToolDispatch({
     threadId,
     runId,
-    workingDirectory,
+    ...(workingDirectory === undefined ? {} : { workingDirectory }),
     computerSessionId: socketState.computerSessionId,
     toolName,
     toolArgs,

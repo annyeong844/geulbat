@@ -1,4 +1,5 @@
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
 
@@ -17,6 +18,7 @@ export function AssistantTranscriptLiveTail(props: {
   activeArtifact: ThreadArtifactVersion | null;
   planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   streamError: string | null;
+  streamErrorCode?: ErrorCode | null;
   hasUnreadStreamContent: boolean;
   isRunning: boolean;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
@@ -29,6 +31,7 @@ export function AssistantTranscriptLiveTail(props: {
     activeArtifact,
     planningWorkflowSnapshot = null,
     streamError,
+    streamErrorCode = null,
     hasUnreadStreamContent,
     isRunning,
     onStartArtifactRun,
@@ -81,7 +84,17 @@ export function AssistantTranscriptLiveTail(props: {
         )
       ) : null}
 
-      {streamError ? (
+      {streamErrorCode === 'llm_provider_request_outcome_unknown' ? (
+        <div className="provider-outcome-unknown" role="alert">
+          <strong>이전 요청의 결과를 아직 확인할 수 없어요</strong>
+          <span>
+            제공자가 이미 작업했을 가능성이 있어 자동으로 다시 보내지 않았어요.
+            아래 복구 버튼을 누르면 살아 있는 요청과 늦게 도착한 결과를 먼저
+            확인하고, 둘 다 없을 때만 이전 요청을 포기합니다. 이 경우 작업이나
+            요금이 중복될 수 있어요.
+          </span>
+        </div>
+      ) : streamError ? (
         <div style={assistantStyles.errorBanner} role="alert">
           응답 생성 실패. {streamError}
         </div>

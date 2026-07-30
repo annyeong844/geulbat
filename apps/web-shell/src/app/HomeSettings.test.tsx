@@ -126,6 +126,12 @@ void test('HomeCenterSurface keeps editor-local state across center overlays', (
 
   act(() => {
     renderer.root.findByProps({ 'aria-label': '확장 전환' }).props.onClick();
+    renderer.root.findByProps({ 'aria-label': '검토 전환' }).props.onClick();
+  });
+  assert.match(renderedText(renderer.root), /검토 화면/);
+
+  act(() => {
+    renderer.root.findByProps({ 'aria-label': '검토 전환' }).props.onClick();
   });
   assert.match(renderedText(renderer.root), /편집기 상태 1/);
 
@@ -135,6 +141,7 @@ void test('HomeCenterSurface keeps editor-local state across center overlays', (
 function CenterSurfaceHarness() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [extensionsOpen, setExtensionsOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   return (
     <>
       <button
@@ -147,11 +154,18 @@ function CenterSurfaceHarness() {
         aria-label="확장 전환"
         onClick={() => setExtensionsOpen((open) => !open)}
       />
+      <button
+        type="button"
+        aria-label="검토 전환"
+        onClick={() => setReviewOpen((open) => !open)}
+      />
       <HomeCenterSurface
         settingsOpen={settingsOpen}
         extensionsOpen={extensionsOpen}
+        reviewOpen={reviewOpen}
         editor={<StatefulEditor />}
         extensions={<div>확장 화면</div>}
+        review={<div>검토 화면</div>}
         settings={<div>설정 화면</div>}
       />
     </>

@@ -618,6 +618,31 @@
   background: var(--surface-container-lowest);
 }
 
+.ask-user-card.is-understanding-confirmation {
+  border-color: color-mix(
+    in srgb,
+    var(--secondary) 38%,
+    var(--outline-variant)
+  );
+  background:
+    radial-gradient(
+      circle at 0 0,
+      color-mix(in srgb, var(--secondary) 12%, transparent),
+      transparent 44%
+    ),
+    var(--surface-container-lowest);
+}
+
+.ask-user-purpose {
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--secondary) 14%, transparent);
+  color: var(--secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
 /* 이미 답한 질문은 기록이다 — 살아 있는 질문보다 한 걸음 물러나 보인다. */
 .ask-user-card.is-answered {
   background: transparent;

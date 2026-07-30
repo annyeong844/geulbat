@@ -22,7 +22,7 @@ void test('list_files defaults a missing path to the current directory', async (
 
   const result = await listFilesTool.execute(
     {},
-    { callId: 'call-list-1', computerFileRoot },
+    { callId: 'call-list-1', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, true);
@@ -75,7 +75,7 @@ void test('list_files returns entries beyond the old fixed cap', async () => {
 
   const result = await listFilesTool.execute(
     {},
-    { callId: 'call-list-many', computerFileRoot },
+    { callId: 'call-list-many', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, true);
@@ -138,6 +138,7 @@ void test('list_files resolves relative paths from the current directory', async
     {
       callId: 'call-list-computer-relative',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 
@@ -190,7 +191,7 @@ void test('list_files includes hidden and ignored-looking host entries', async (
 
   const result = await listFilesTool.execute(
     { recursive: true },
-    { callId: 'call-list-hidden', computerFileRoot },
+    { callId: 'call-list-hidden', computerFileRoot, workingDirectory: '' },
   );
 
   assert.equal(result.ok, true);
@@ -244,7 +245,11 @@ void test('list_files bounds recursive depth and prunes caller-selected basename
       excludeNames: ['node_modules', '.audit'],
       entryTypes: ['directory'],
     },
-    { callId: 'call-list-bounded', computerFileRoot },
+    {
+      callId: 'call-list-bounded',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -296,6 +301,7 @@ void test('list_files follows a directory symlink regardless of its target name'
     {
       callId: 'call-list-computer-reserved-symlink',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 

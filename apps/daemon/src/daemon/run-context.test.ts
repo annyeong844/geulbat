@@ -17,14 +17,16 @@ void test('createRunContext keeps Home state and working-directory context separ
   });
 });
 
-void test('createRunContext defaults only the working directory to the computer root', () => {
+void test('createRunContext preserves a missing working directory', () => {
   const context = createRunContext({
     threadId: '00000000-0000-4000-8000-000000000002',
     stateRoot: '/tmp/home-state',
   });
 
-  assert.equal(context.workingDirectory, '');
-  assert.equal(context.stateRoot, '/tmp/home-state');
+  assert.deepEqual(context, {
+    threadId: '00000000-0000-4000-8000-000000000002',
+    stateRoot: '/tmp/home-state',
+  });
 });
 
 void test('createRunContext rejects a missing Home state root without a cwd fallback', () => {

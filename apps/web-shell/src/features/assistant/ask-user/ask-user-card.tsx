@@ -35,8 +35,15 @@ export function AskUserCard(props: {
 
   return (
     <div
-      className={`ask-user-card${onAnswer === undefined ? ' is-answered' : ''}`}
+      className={`ask-user-card${
+        view.purpose === 'understanding_confirmation'
+          ? ' is-understanding-confirmation'
+          : ''
+      }${onAnswer === undefined ? ' is-answered' : ''}`}
     >
+      {view.purpose === 'understanding_confirmation' ? (
+        <div className="ask-user-purpose">제가 이해한 목표</div>
+      ) : null}
       <div className="ask-user-question">{view.question}</div>
       <div className="ask-user-options" role="list">
         {view.options.map((option, index) => (

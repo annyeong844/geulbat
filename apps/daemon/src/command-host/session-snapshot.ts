@@ -56,7 +56,10 @@ export function buildSnapshot(
     stderrBytes: entry.stderr.ring.totalBytes,
     stdoutChars: entry.stdout.chars,
     stderrChars: entry.stderr.chars,
-    durationMs: (terminal?.finishedAtMs ?? Date.now()) - entry.startedAtMs,
+    durationMs: Math.max(
+      0,
+      (terminal?.finishedAtMs ?? Date.now()) - entry.startedAtMs,
+    ),
     firstOutputAfterMs: entry.firstOutputAfterMs,
     revision: entry.revision,
     stdinOpen: entry.stdinOpen,

@@ -5,7 +5,7 @@ import type {
 } from '../wire/types.js';
 import { isRecord } from '../../../runtime-json.js';
 import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
-import { ProviderReplayScopeMismatchError } from '../provider-error.js';
+import { assertProviderReplayScope } from '../provider-replay-scope.js';
 
 export function buildResponseCreatePayload(
   body: WireRequestBase,
@@ -75,7 +75,7 @@ export function buildResponseWireInput(
         ) {
           throw new ProviderNativeHistoryIncompatibleError();
         }
-        assertReplayScopeCompatible(
+        assertProviderReplayScope(
           item.providerReplayScopeId,
           providerNativeTarget.providerReplayScopeId,
         );
@@ -85,7 +85,7 @@ export function buildResponseWireInput(
         if (!isRecord(item.data)) {
           throw new ProviderHistoryItemInvalidError();
         }
-        assertReplayScopeCompatible(
+        assertProviderReplayScope(
           item.providerReplayScopeId,
           providerNativeTarget?.providerReplayScopeId,
         );
@@ -127,22 +127,6 @@ function buildResponseWireFunctionCallOutput(
     call_id: item.callId,
     output: item.output,
   };
-}
-
-function assertReplayScopeCompatible(
-  itemScope: ProviderReplayScopeId | null | undefined,
-  targetScope: ProviderReplayScopeId | undefined,
-): void {
-  // Undefined is reserved for current-process normalized/test history. Every
-  // persisted provider-native item is rehydrated with either its digest or
-  // explicit null, so durable replay cannot bypass this comparison.
-  if (
-    targetScope !== undefined &&
-    itemScope !== undefined &&
-    itemScope !== targetScope
-  ) {
-    throw new ProviderReplayScopeMismatchError();
-  }
 }
 
 function assertValidFunctionCallReplay(

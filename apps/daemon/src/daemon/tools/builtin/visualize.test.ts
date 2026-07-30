@@ -21,6 +21,7 @@ void test('visualize는 code 필수 스키마를 노출한다', () => {
     'code',
     'title',
     'planStamp',
+    'planStepIds',
   ]);
   assert.equal(visualizeTool.sideEffectLevel, 'none');
   assert.equal(visualizeTool.requiresApproval, false);
@@ -144,7 +145,7 @@ void test('승인 대기 계획의 시각화는 현재 daemon stamp와 정확히
     assert.match(missing.error, /PLAN_APPROVAL_REQUIRED/u);
   }
 
-  const rendered = await visualizeTool.execute(
+  const missingStepBinding = await visualizeTool.execute(
     {
       code: '<svg></svg>',
       planStamp: {
@@ -156,6 +157,45 @@ void test('승인 대기 계획의 시각화는 현재 daemon stamp와 정확히
     },
     context,
   );
+  assert.equal(missingStepBinding.ok, false);
+  if (!missingStepBinding.ok) {
+    assert.match(missingStepBinding.error, /PLAN_APPROVAL_REQUIRED/u);
+  }
+
+  const mismatchedStepBinding = await visualizeTool.execute(
+    {
+      code: '<svg><g data-plan-step-id="other"></g></svg>',
+      planStamp: {
+        workflowId: proposed.workflowId,
+        planId: proposed.planId,
+        revision: proposed.revision,
+        digest: proposed.digest,
+      },
+      planStepIds: ['other'],
+    },
+    context,
+  );
+  assert.equal(mismatchedStepBinding.ok, false);
+  if (!mismatchedStepBinding.ok) {
+    assert.match(
+      mismatchedStepBinding.error,
+      /PLAN_REVISION_APPROVAL_REQUIRED/u,
+    );
+  }
+
+  const rendered = await visualizeTool.execute(
+    {
+      code: '<svg><g data-plan-step-id="diagram"></g></svg>',
+      planStamp: {
+        workflowId: proposed.workflowId,
+        planId: proposed.planId,
+        revision: proposed.revision,
+        digest: proposed.digest,
+      },
+      planStepIds: ['diagram'],
+    },
+    context,
+  );
   assert.equal(rendered.ok, true);
   assert.deepEqual(JSON.parse(rendered.output).planStamp, {
     workflowId: proposed.workflowId,
@@ -163,4 +203,5 @@ void test('승인 대기 계획의 시각화는 현재 daemon stamp와 정확히
     revision: proposed.revision,
     digest: proposed.digest,
   });
+  assert.deepEqual(JSON.parse(rendered.output).planStepIds, ['diagram']);
 });

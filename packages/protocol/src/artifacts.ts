@@ -37,7 +37,7 @@ export interface ArtifactRef {
 }
 
 interface ArtifactSourceRefBase {
-  workingDirectory: string;
+  workingDirectory?: string;
   threadId: ThreadId;
   runId: ArtifactRunId | null;
   messageTimestamp: string | null;
@@ -128,7 +128,8 @@ export function isArtifactSourceRef(
   const threadId = readRequiredThreadId(value.threadId);
   if (
     'projectId' in value ||
-    !isPortableArtifactPath(value.workingDirectory, true) ||
+    (value.workingDirectory !== undefined &&
+      !isPortableArtifactPath(value.workingDirectory, true)) ||
     threadId === null ||
     (value.runId !== null && !isString(value.runId)) ||
     (value.messageTimestamp !== null && !isString(value.messageTimestamp))
@@ -158,7 +159,8 @@ export function normalizeArtifactSourceRef(
   const messageTimestamp = readNullableString(value.messageTimestamp);
   if (
     threadId === null ||
-    !isPortableArtifactPath(value.workingDirectory, true) ||
+    (value.workingDirectory !== undefined &&
+      !isPortableArtifactPath(value.workingDirectory, true)) ||
     runId === undefined ||
     messageTimestamp === undefined
   ) {
@@ -172,7 +174,9 @@ export function normalizeArtifactSourceRef(
     }
     return {
       kind: 'thread',
-      workingDirectory: value.workingDirectory,
+      ...(value.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: value.workingDirectory }),
       threadId,
       runId,
       filePath: null,
@@ -186,7 +190,9 @@ export function normalizeArtifactSourceRef(
     }
     return {
       kind: 'thread-file',
-      workingDirectory: value.workingDirectory,
+      ...(value.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: value.workingDirectory }),
       threadId,
       runId,
       filePath: value.filePath,
@@ -204,7 +210,9 @@ export function normalizeArtifactSourceRef(
   ) {
     return {
       kind: 'thread-file',
-      workingDirectory: value.workingDirectory,
+      ...(value.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: value.workingDirectory }),
       threadId,
       runId,
       filePath: legacyFilePath,
@@ -214,7 +222,9 @@ export function normalizeArtifactSourceRef(
 
   return {
     kind: 'thread',
-    workingDirectory: value.workingDirectory,
+    ...(value.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: value.workingDirectory }),
     threadId,
     runId,
     filePath: null,

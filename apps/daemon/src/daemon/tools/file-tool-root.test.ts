@@ -178,6 +178,34 @@ void test('file paths fail closed when ComputerFileScope is unavailable', () => 
   );
 });
 
+void test('relative file paths fail closed when no working directory is attached', () => {
+  assert.throws(
+    () =>
+      resolveComputerFileToolPath(
+        { computerFileRoot: '/computer' },
+        'notes.txt',
+      ),
+    (error: unknown) =>
+      error instanceof FileAccessError &&
+      error.code === 'access_denied' &&
+      /working directory/u.test(error.message),
+  );
+});
+
+void test('an explicit absolute file path remains usable without a working directory', () => {
+  assert.deepEqual(
+    resolveComputerFileToolPath(
+      { computerFileRoot: '/computer' },
+      '/computer/Downloads/notes.txt',
+    ),
+    {
+      root: 'computer',
+      absoluteRoot: '/computer',
+      path: 'Downloads/notes.txt',
+    },
+  );
+});
+
 void test('a current directory outside the coordinate base remains usable', () => {
   assert.deepEqual(
     resolveComputerFileToolPath(

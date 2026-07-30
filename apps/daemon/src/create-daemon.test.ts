@@ -36,6 +36,25 @@ void test('createDaemon starts without MCP when its registry cannot be read', as
   assert.notEqual(daemon.app, undefined, '데몬은 MCP 없이도 떠야 한다');
 });
 
+void test('createDaemon leaves marketplace catalog inspection to the first marketplace request', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  await mkdir(daemonContext.homeStateRoot, { recursive: true });
+  const marketplaceStore = daemonContext.pluginMarketplaces;
+  let initializeCalls = 0;
+  daemonContext.pluginMarketplaces = {
+    ...marketplaceStore,
+    async initialize() {
+      initializeCalls += 1;
+      await marketplaceStore.initialize();
+    },
+  };
+
+  const daemon = await createDaemon({ daemonContext });
+
+  assert.notEqual(daemon.app, undefined);
+  assert.equal(initializeCalls, 0);
+});
+
 void test('createDaemon reaps prior PTC runtime residue before mounting routes', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const observedStateRoots: string[] = [];

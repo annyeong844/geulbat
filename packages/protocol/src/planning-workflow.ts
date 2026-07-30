@@ -42,11 +42,15 @@ export interface ApprovedPlanRef {
   digest: PlanDigest;
 }
 
+export interface SupersededPlanRevision extends ApprovedPlanRef {
+  draft: PlanDraftV1;
+}
+
 export type PlanRenderingStamp = ApprovedPlanRef;
 
-export function isSamePlanRenderingStamp(
-  left: PlanRenderingStamp,
-  right: PlanRenderingStamp,
+export function isSameApprovedPlanRef(
+  left: ApprovedPlanRef,
+  right: ApprovedPlanRef,
 ): boolean {
   return (
     left.workflowId === right.workflowId &&
@@ -61,6 +65,7 @@ interface PlanningWorkflowSnapshotBase {
   threadId: ThreadId;
   intensity: PlanModeIntensity;
   depth: PlanModeDepth;
+  supersededPlan?: SupersededPlanRevision;
   createdAt: string;
   updatedAt: string;
 }
@@ -179,6 +184,7 @@ export function isPlanningWorkflowSnapshot(
         'threadId',
         'intensity',
         'depth',
+        'supersededPlan',
         'createdAt',
         'updatedAt',
         'state',
@@ -188,7 +194,13 @@ export function isPlanningWorkflowSnapshot(
       ]) &&
       (value.planId === undefined || isNonBlankString(value.planId)) &&
       (value.revision === undefined || isPositiveInteger(value.revision)) &&
-      (value.revisionFeedback === undefined || isString(value.revisionFeedback))
+      (value.revisionFeedback === undefined ||
+        isString(value.revisionFeedback)) &&
+      (value.supersededPlan === undefined ||
+        (isSupersededPlanRevision(value.supersededPlan) &&
+          value.supersededPlan.workflowId === value.workflowId &&
+          value.supersededPlan.planId === value.planId &&
+          value.supersededPlan.revision === value.revision))
     );
   }
   if (
@@ -211,6 +223,7 @@ export function isPlanningWorkflowSnapshot(
       'threadId',
       'intensity',
       'depth',
+      'supersededPlan',
       'createdAt',
       'updatedAt',
       'state',
@@ -227,6 +240,11 @@ export function isPlanningWorkflowSnapshot(
   if (
     !isApprovedPlanFields(value) ||
     !isPlanDraftV1(value.draft) ||
+    (value.supersededPlan !== undefined &&
+      (!isSupersededPlanRevision(value.supersededPlan) ||
+        value.supersededPlan.workflowId !== value.workflowId ||
+        value.supersededPlan.planId !== value.planId ||
+        value.supersededPlan.revision >= value.revision)) ||
     !isString(value.proposalRunId) ||
     !isRunId(value.proposalRunId)
   ) {
@@ -235,6 +253,23 @@ export function isPlanningWorkflowSnapshot(
   return executionState
     ? isString(value.executionRunId) && isRunId(value.executionRunId)
     : value.executionRunId === undefined;
+}
+
+function isSupersededPlanRevision(
+  value: unknown,
+): value is SupersededPlanRevision {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      'workflowId',
+      'planId',
+      'revision',
+      'digest',
+      'draft',
+    ]) &&
+    isApprovedPlanFields(value) &&
+    isPlanDraftV1(value.draft)
+  );
 }
 
 export function isPlanWorkflowCommand(

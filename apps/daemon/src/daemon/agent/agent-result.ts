@@ -1,4 +1,5 @@
 import type { DaemonArtifactCandidate } from '../artifact-candidate.js';
+import type { ModelSettlementIdentity } from './contract.js';
 
 export type AgentArtifactCandidate = DaemonArtifactCandidate;
 
@@ -6,6 +7,20 @@ export interface AgentResult {
   ok: boolean;
   finalProse: string;
   artifactCandidate?: AgentArtifactCandidate;
+  modelSettlementIdentity?: ModelSettlementIdentity;
+}
+
+export function createAgentResultPersistenceValue(result: AgentResult) {
+  return {
+    ok: result.ok,
+    finalProse: result.finalProse,
+    ...(result.artifactCandidate === undefined
+      ? {}
+      : { artifactCandidate: result.artifactCandidate }),
+    ...(result.modelSettlementIdentity === undefined
+      ? {}
+      : { modelSettlementIdentity: result.modelSettlementIdentity }),
+  };
 }
 
 interface AgentResultSurface {

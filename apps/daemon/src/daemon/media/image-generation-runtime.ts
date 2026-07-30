@@ -51,7 +51,9 @@ export interface ImageGenerationRuntimeDeps {
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
-    'acquireWebSocket' | 'streamDurableHttpSseEvents'
+    | 'acquireWebSocket'
+    | 'streamDurableHttpSseEvents'
+    | 'streamDurableResponseEvents'
   >;
   getProviderAuthImpl?: typeof getProviderAuth;
   forceRefreshProviderAuthImpl?: typeof forceRefreshProviderAuth;
@@ -182,12 +184,13 @@ export function createImageGenerationRuntime(
             parsePreparedImageCandidate(operation.candidate),
           );
         }
-        if (
-          operation.effectStarted &&
-          (providerId !== 'grok_oauth' ||
-            deps.providerWebSocketSessions.streamDurableHttpSseEvents ===
-              undefined)
-        ) {
+        const hasDurableProviderOwner =
+          providerId === 'grok_oauth'
+            ? deps.providerWebSocketSessions.streamDurableHttpSseEvents !==
+              undefined
+            : deps.providerWebSocketSessions.streamDurableResponseEvents !==
+              undefined;
+        if (operation.effectStarted && !hasDurableProviderOwner) {
           throw new ImageGenerationError({
             surface: 'recovery',
             reasonCode: 'provider_outcome_unknown',
@@ -223,6 +226,7 @@ async function generateImageOnce(
   options: { allowRefresh: boolean },
 ): Promise<GeneratedImageCandidate> {
   const getAuth = deps.getProviderAuthImpl ?? getProviderAuth;
+  const requestAttempt = options.allowRefresh ? 0 : 1;
 
   if (providerId === 'grok_oauth') {
     const auth = await acquireGenerationProviderAuthOrFailClosed({
@@ -239,7 +243,7 @@ async function generateImageOnce(
     const createRequestImpl = createDurableGrokImageCreateRequest(
       input,
       deps,
-      options.allowRefresh ? 0 : 1,
+      requestAttempt,
     );
     if (input.recovery !== undefined) {
       await markMediaGenerationEffectStarted({
@@ -268,6 +272,11 @@ async function generateImageOnce(
       }),
   });
   const generate = deps.generateViaCodexImpl ?? generateImageViaCodexResponses;
+  const onDurableRequestPrepared = createDurableCodexImageRequestPreparation(
+    input,
+    deps,
+    requestAttempt,
+  );
   if (input.recovery !== undefined) {
     await markMediaGenerationEffectStarted({
       stateRoot: input.stateRoot,
@@ -278,12 +287,53 @@ async function generateImageOnce(
   return generate({
     request: input.request,
     auth: { accessToken: auth.accessToken, accountId: auth.accountId },
-    // 스레드 단위로 소켓을 재사용하되 채팅 세션과는 분리한다.
-    providerSessionId: `image-generation:${input.threadId}`,
+    // recovery operation은 다른 이미지 요청과 durable coordinate를 공유하지
+    // 않는다. 일반 호출은 기존 thread-scoped socket reuse를 유지한다.
+    providerSessionId:
+      input.recovery === undefined
+        ? `image-generation:${input.threadId}`
+        : `media:image:${input.threadId}:${input.recovery.identity.operationId}`,
     providerWebSocketSessions: deps.providerWebSocketSessions,
+    requestAttempt,
+    ...(onDurableRequestPrepared === undefined
+      ? {}
+      : { onDurableRequestPrepared }),
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
     ...(deps.now !== undefined ? { now: deps.now } : {}),
   });
+}
+
+function createDurableCodexImageRequestPreparation(
+  input: GenerateImageArtifactInput,
+  deps: ImageGenerationRuntimeDeps,
+  requestAttempt: number,
+): ((requestDigest: string) => Promise<void>) | undefined {
+  const recovery = input.recovery;
+  if (
+    recovery === undefined ||
+    deps.providerWebSocketSessions.streamDurableResponseEvents === undefined
+  ) {
+    return undefined;
+  }
+  return async (requestDigest) => {
+    try {
+      await recordMediaGenerationProviderRequestDigest({
+        stateRoot: input.stateRoot,
+        threadId: input.threadId,
+        identity: recovery.identity,
+        requestAttempt,
+        requestDigest,
+      });
+    } catch (error: unknown) {
+      throw new ImageGenerationError({
+        surface: 'recovery',
+        reasonCode: 'provider_outcome_unknown',
+        message:
+          'image generation request changed after its durable owner was admitted; a replacement request was not sent',
+        cause: error,
+      });
+    }
+  };
 }
 
 function createDurableGrokImageCreateRequest(

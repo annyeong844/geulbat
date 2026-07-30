@@ -9,6 +9,8 @@ import type {
   RunChannelServerMessage,
   RunEventAckRequest,
   RunInterjectRequest,
+  RunProviderRequestRecoveryRequest,
+  RunProviderRequestRecoveryDisposition,
   RunToolRequest,
   RunToolResultPayload,
 } from '@geulbat/protocol/run-channel';
@@ -333,6 +335,36 @@ export class RunChannelClient {
     return requestId;
   }
 
+  async recoverProviderRequestOutcomeUnknown(
+    request: RunProviderRequestRecoveryRequest,
+  ): Promise<RunProviderRequestRecoveryDisposition> {
+    const requestId = createRequestId();
+    const acknowledgement = new Promise<RunControlMessage>(
+      (resolve, reject) => {
+        this.pendingControlAcks.set(requestId, {
+          action: 'run.provider_request.recover',
+          resolve,
+          reject,
+        });
+      },
+    );
+    try {
+      await this.send({
+        type: 'run.provider_request.recover',
+        requestId,
+        request,
+      });
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    const control = await acknowledgement;
+    if (control.action !== 'run.provider_request.recover') {
+      throw new Error('unexpected provider request recovery acknowledgement');
+    }
+    return control.disposition;
+  }
+
   async planCommand(
     request: PlanWorkflowCommand,
   ): Promise<Extract<RunControlMessage, { action: 'plan.command' }>> {
@@ -626,6 +658,9 @@ export class RunChannelClient {
     }
     const { event } = message;
     this.threadSubscriptions.add(event.threadId);
+    if (message.runEventCursor === false) {
+      return;
+    }
     this.lastSeenEventSeqByRun.set(event.runId, event.seq);
     if (event.type === 'run_ack') {
       this.activeRunByThread.set(event.threadId, {

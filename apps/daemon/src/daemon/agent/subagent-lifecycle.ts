@@ -281,16 +281,17 @@ function publishBackgroundChildTerminalOutcome(args: {
     modelPin,
   } = args;
 
+  const deliveryId = randomUUID();
   runChildLifecycleStep('mark child terminal', () => {
     runtimeServices.childRuns.markChildTerminal({
       childRunId,
+      deliveryId,
       terminalState: outcome.terminalState,
       result: outcome.terminalResult,
       reason: outcome.terminalReason,
     });
   });
   const runtime = runtimeServices.childRuns.getChildRun(childRunId)?.runtime;
-  const deliveryId = randomUUID();
   return runChildLifecycleStep(
     'publish background child terminal result',
     () => {

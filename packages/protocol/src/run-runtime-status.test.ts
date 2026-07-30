@@ -52,6 +52,7 @@ void test('provider request diagnostics preserve timing and factual retry outcom
       available: false,
       performed: true,
       outcome: 'recovered',
+      retryAfterMs: 2_500,
     },
   } as const;
 
@@ -85,6 +86,18 @@ void test('provider request diagnostics preserve timing and factual retry outcom
         available: true,
         performed: false,
         outcome: 'scheduled',
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isProviderRequestDiagnostics({
+      ...request,
+      retry: {
+        available: true,
+        performed: true,
+        outcome: 'scheduled',
+        retryAfterMs: -1,
       },
     }),
     false,

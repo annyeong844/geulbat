@@ -95,12 +95,18 @@ export type ResponsesWebSocketAdmissionObserver = (
   observation: ResponsesWebSocketAdmissionObservation,
 ) => void;
 
+export type ProviderAdmissionFallbackDelayResolver = (
+  error: unknown,
+) => number | undefined;
+
 export interface ResponsesDurableRequestStreamInput extends ResponsesDurableRequestStreamArgs {
   onAdmissionState?: ResponsesWebSocketAdmissionObserver;
+  resolveProviderAdmissionFallbackDelayMs?: ProviderAdmissionFallbackDelayResolver;
 }
 
 export interface DurableHttpSseRequestStreamInput extends DurableHttpSseRequestStreamArgs {
   onAdmissionState?: ResponsesWebSocketAdmissionObserver;
+  resolveProviderAdmissionFallbackDelayMs?: ProviderAdmissionFallbackDelayResolver;
 }
 
 export interface ResponsesWebSocketSessionStore {
@@ -342,13 +348,20 @@ export function createResponsesWebSocketSessionStore(
       input.onAdmissionState?.({ state: 'admitted' });
     }
     try {
-      const { onAdmissionState: _onAdmissionState, ...request } = input;
+      const {
+        onAdmissionState: _onAdmissionState,
+        resolveProviderAdmissionFallbackDelayMs:
+          _resolveProviderAdmissionFallbackDelayMs,
+        ...request
+      } = input;
       yield* durableRequestTransport.streamEvents({
         ...request,
         signal: acquisitionSignal,
       });
     } catch (error: unknown) {
-      const retryAfterMs = readRetryAfterMs(error);
+      const retryAfterMs =
+        readRetryAfterMs(error) ??
+        input.resolveProviderAdmissionFallbackDelayMs?.(error);
       if (retryAfterMs !== undefined) {
         providerAdmission.defer(providerScope, retryAfterMs);
       }
@@ -387,13 +400,20 @@ export function createResponsesWebSocketSessionStore(
       input.onAdmissionState?.({ state: 'admitted' });
     }
     try {
-      const { onAdmissionState: _onAdmissionState, ...request } = input;
+      const {
+        onAdmissionState: _onAdmissionState,
+        resolveProviderAdmissionFallbackDelayMs:
+          _resolveProviderAdmissionFallbackDelayMs,
+        ...request
+      } = input;
       yield* streamHttpSseEvents({
         ...request,
         signal: acquisitionSignal,
       });
     } catch (error: unknown) {
-      const retryAfterMs = readRetryAfterMs(error);
+      const retryAfterMs =
+        readRetryAfterMs(error) ??
+        input.resolveProviderAdmissionFallbackDelayMs?.(error);
       if (retryAfterMs !== undefined) {
         providerAdmission.defer(providerScope, retryAfterMs);
       }

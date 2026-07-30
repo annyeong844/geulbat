@@ -5,6 +5,7 @@ import {
   type ToolSdkPublicTool,
   type ToolSdkResult,
 } from '@geulbat/tool-sdk';
+import { isRecord, tryParseJsonRecord } from '../runtime-json.js';
 
 export type DaemonToolSdkPublicInlineResult = ToolSdkResult<{
   kind: 'inline';
@@ -246,13 +247,8 @@ function normalizeSearchFilesResult(
 function readToolResultObject(
   output: string,
 ): ToolSdkResult<Record<string, unknown>> {
-  let value: unknown;
-  try {
-    value = JSON.parse(output);
-  } catch {
-    return invalidToolResult();
-  }
-  return isRecord(value) ? { ok: true, value } : invalidToolResult();
+  const parsed = tryParseJsonRecord(output);
+  return parsed.ok ? parsed : invalidToolResult();
 }
 
 function invalidToolResult(): ToolSdkFailure {
@@ -264,10 +260,6 @@ function invalidToolResult(): ToolSdkFailure {
       retryable: false,
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {

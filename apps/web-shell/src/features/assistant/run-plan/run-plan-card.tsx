@@ -25,7 +25,7 @@ export function RunPlanCard(props: {
       <ul className="run-plan-list">
         {plan.map((step, index) => (
           <li
-            key={`${index}:${step.step}`}
+            key={step.id ?? `${index}:${step.step}`}
             className={`run-plan-item ${step.status}`}
           >
             <span className="run-plan-glyph" aria-hidden="true">

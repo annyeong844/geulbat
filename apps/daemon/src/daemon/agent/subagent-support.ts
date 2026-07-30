@@ -145,7 +145,7 @@ interface LaunchSubagentBackgroundRunArgs {
   parentRunId: RunId;
   ownerThreadId: RunContext['threadId'];
   stateRoot: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   startedChildRun: StartedChildRunHandle;
   parentRunState: ToolRunState;
   runtimeServices: AgentRuntimeServices;
@@ -232,7 +232,9 @@ async function startSubagentBackgroundRun(
           ? { threadId: args.childThreadId }
           : {}),
         stateRoot: args.stateRoot,
-        workingDirectory: args.workingDirectory,
+        ...(args.workingDirectory === undefined
+          ? {}
+          : { workingDirectory: args.workingDirectory }),
       },
       ownerThreadId: args.ownerThreadId,
       parentRunId: args.parentRunId,
@@ -311,7 +313,9 @@ async function startSubagentBackgroundRun(
     parentRunId: args.parentRunId,
     ownerThreadId: args.ownerThreadId,
     stateRoot: args.stateRoot,
-    workingDirectory: args.workingDirectory,
+    ...(args.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: args.workingDirectory }),
     startedChildRun: {
       runId: childRunId,
       threadId: startedChildRun.threadId,
@@ -373,7 +377,9 @@ async function recoverSubagentBackgroundRun(
       runContext: {
         threadId: checkpoint.threadId,
         stateRoot: launchInput.stateRoot,
-        workingDirectory: checkpoint.request.workingDirectory,
+        ...(checkpoint.request.workingDirectory === undefined
+          ? {}
+          : { workingDirectory: checkpoint.request.workingDirectory }),
       },
       ownerThreadId: backgroundChild.ownerThreadId,
       parentRunId: backgroundChild.parentRunId,
@@ -484,7 +490,9 @@ async function recoverSubagentBackgroundRun(
         parentRunId: backgroundChild.parentRunId,
         ownerThreadId: backgroundChild.ownerThreadId,
         stateRoot: launchInput.stateRoot,
-        workingDirectory: checkpoint.request.workingDirectory,
+        ...(checkpoint.request.workingDirectory === undefined
+          ? {}
+          : { workingDirectory: checkpoint.request.workingDirectory }),
         computerSessionId: backgroundChild.computerSessionId,
         permissionMode: checkpoint.request.permissionMode,
         ultraReasoning: checkpoint.request.ultraReasoning ?? false,
@@ -597,7 +605,7 @@ async function launchSubagentBackgroundRun(
     runId: childRunId,
     threadId: childThreadId,
     request: {
-      workingDirectory,
+      ...(workingDirectory === undefined ? {} : { workingDirectory }),
       permissionMode: permissionMode ?? DEFAULT_CHILD_PERMISSION_MODE,
       ultraReasoning,
       loopImplementation: {
@@ -682,7 +690,7 @@ async function launchSubagentBackgroundRun(
         parentRunId,
         ownerThreadId,
         stateRoot,
-        workingDirectory,
+        ...(workingDirectory === undefined ? {} : { workingDirectory }),
         computerSessionId,
         permissionMode,
         ultraReasoning,
@@ -746,7 +754,7 @@ async function runBackgroundChild(args: {
   parentRunId: RunId;
   ownerThreadId: RunContext['threadId'];
   stateRoot: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   computerSessionId: string;
   permissionMode: PermissionMode | undefined;
   ultraReasoning: boolean;
@@ -798,7 +806,7 @@ async function runBackgroundChild(args: {
       runContext: createRunContext({
         threadId: childThreadId,
         stateRoot,
-        workingDirectory,
+        ...(workingDirectory === undefined ? {} : { workingDirectory }),
       }),
       prompt: task,
       signal: childRunState.abortController.signal,

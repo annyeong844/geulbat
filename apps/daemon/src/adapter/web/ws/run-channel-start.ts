@@ -219,7 +219,7 @@ export async function executeRunRequest({
   const startParams = {
     runContext: {
       stateRoot: runtimeContext.homeStateRoot,
-      workingDirectory,
+      ...(workingDirectory === undefined ? {} : { workingDirectory }),
       ...(requestedThreadId !== undefined
         ? { threadId: requestedThreadId }
         : {}),
@@ -245,10 +245,10 @@ export async function executeRunRequest({
   const runContext = createRunContext({
     threadId,
     stateRoot: runtimeContext.homeStateRoot,
-    workingDirectory,
+    ...(workingDirectory === undefined ? {} : { workingDirectory }),
   });
   const runExecutionTemplate = {
-    workingDirectory,
+    ...(workingDirectory === undefined ? {} : { workingDirectory }),
     ...(modelId === undefined ? {} : { modelId }),
     ...(currentFile === undefined ? {} : { currentFile }),
     ...(selection === undefined ? {} : { selection }),
@@ -428,7 +428,7 @@ export async function executeRunRequest({
       threadId,
     });
     const recoverableRequest: RecoverableRunRequest = {
-      workingDirectory,
+      ...(workingDirectory === undefined ? {} : { workingDirectory }),
       permissionMode,
       ...executionLifecycle.checkpointBindings,
       ultraReasoning,
@@ -565,8 +565,10 @@ export async function recoverDurableRunsForSocket(
     runEventCursors === undefined
       ? undefined
       : new Map(runEventCursors.map((cursor) => [cursor.runId, cursor.seq]));
-  const terminalCheckpoints =
-    await runtimeContext.runCheckpoints.listUnacknowledgedTerminal();
+  const {
+    running: runningCheckpoints,
+    unacknowledgedTerminal: terminalCheckpoints,
+  } = await runtimeContext.runCheckpoints.listRecoveryCandidates();
   let recoveredCount = 0;
   for (const checkpoint of terminalCheckpoints) {
     if (checkpoint.request.backgroundChild !== undefined) {
@@ -585,7 +587,6 @@ export async function recoverDurableRunsForSocket(
     }
   }
 
-  const runningCheckpoints = await runtimeContext.runCheckpoints.listRunning();
   const recovered = await Promise.all(
     runningCheckpoints.map(async (checkpoint) => {
       if (checkpoint.request.backgroundChild !== undefined) {

@@ -13,6 +13,7 @@ import {
 } from './responses-wire-discovery.js';
 import {
   readRetryAfterMs,
+  type ProviderAdmissionFallbackDelayResolver,
   type ResponsesWebSocketAdmissionObserver,
   type ResponsesWebSocketReusePolicy,
   type ResponsesWebSocketSessionStore,
@@ -22,6 +23,7 @@ import {
   resolveCodexWebSocketUrl,
 } from './responses-websocket-url.js';
 import { iterateWebSocketEventsAfterDispatch } from './responses-websocket-stream.js';
+import type { DurableProviderRequestPreparedHandler } from './responses-durable-request.js';
 import type { HistoryItem, WireRequestBase } from '../wire/types.js';
 
 const CODEX_WS_BETA_HEADER =
@@ -105,10 +107,13 @@ interface ResponsesWebSocketStreamBase {
     'acquireWebSocket' | 'deferProviderRequests' | 'streamDurableResponseEvents'
   >;
   requestAttempt?: number;
+  resumeRequestIdentity?: string;
   signal?: AbortSignal;
   discoverySink?: ResponsesWireDiscoverySink;
   onRequestPrepared?: ResponsesRequestPreparedHandler;
+  onDurableRequestPrepared?: DurableProviderRequestPreparedHandler;
   onAdmissionState?: ResponsesWebSocketAdmissionObserver;
+  resolveProviderAdmissionFallbackDelayMs?: ProviderAdmissionFallbackDelayResolver;
   normalizeEvent?: ResponsesWebSocketEventNormalizer;
   completionEventTypes?: readonly string[];
   // 이벤트 사이 유휴 상한. 기본 60s는 챗 스트림 기준 — 이미지 생성처럼
@@ -149,6 +154,29 @@ export async function streamResponsesOverWebSocket(
   const idleTimeoutMs =
     input.idleTimeoutMs ?? resolveResponsesStreamIdleTimeoutMs();
   const serializedPayload = JSON.stringify(payload);
+  let fallbackDelayResolved = false;
+  const resolveProviderAdmissionFallbackDelayMs = (
+    error: unknown,
+  ): number | undefined => {
+    if (
+      fallbackDelayResolved ||
+      input.resolveProviderAdmissionFallbackDelayMs === undefined
+    ) {
+      return undefined;
+    }
+    fallbackDelayResolved = true;
+    return input.resolveProviderAdmissionFallbackDelayMs(error);
+  };
+  const deferProviderFailure = (error: unknown): void => {
+    const delayMs =
+      readRetryAfterMs(error) ?? resolveProviderAdmissionFallbackDelayMs(error);
+    if (delayMs !== undefined) {
+      input.providerWebSocketSessions.deferProviderRequests?.(
+        webSocketUrl,
+        delayMs,
+      );
+    }
+  };
   const admission = await input.onRequestPrepared?.(
     measureResponsesRequest(payload, serializedPayload),
   );
@@ -168,6 +196,12 @@ export async function streamResponsesOverWebSocket(
         serializedPayload,
         providerSessionId: input.providerSessionId,
         requestAttempt: input.requestAttempt ?? 0,
+        ...(input.resumeRequestIdentity === undefined
+          ? {}
+          : { resumeRequestIdentity: input.resumeRequestIdentity }),
+        ...(input.onDurableRequestPrepared === undefined
+          ? {}
+          : { onPrepared: input.onDurableRequestPrepared }),
         ...(input.completionEventTypes === undefined
           ? {}
           : { completionEventTypes: input.completionEventTypes }),
@@ -179,6 +213,9 @@ export async function streamResponsesOverWebSocket(
         ...(input.onAdmissionState === undefined
           ? {}
           : { onAdmissionState: input.onAdmissionState }),
+        ...(input.resolveProviderAdmissionFallbackDelayMs === undefined
+          ? {}
+          : { resolveProviderAdmissionFallbackDelayMs }),
       });
       // The durable generator owns caller-signal settlement. Racing the same
       // signal in the parser would mask host-stop or coordinate-cleanup errors.
@@ -191,16 +228,11 @@ export async function streamResponsesOverWebSocket(
             : {}),
           ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
           historyProjection: input.historyProjection,
+          onErrorBeforeIteratorClose: deferProviderFailure,
         },
       );
     } catch (error: unknown) {
-      const retryAfterMs = readRetryAfterMs(error);
-      if (retryAfterMs !== undefined) {
-        input.providerWebSocketSessions.deferProviderRequests?.(
-          webSocketUrl,
-          retryAfterMs,
-        );
-      }
+      deferProviderFailure(error);
       throw error;
     }
   }
@@ -264,19 +296,14 @@ export async function streamResponsesOverWebSocket(
         ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
         historyProjection: input.historyProjection,
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        onErrorBeforeIteratorClose: deferProviderFailure,
       },
     );
 
     return result;
   } catch (error: unknown) {
     keepSessionSocket = false;
-    const retryAfterMs = readRetryAfterMs(error);
-    if (retryAfterMs !== undefined) {
-      input.providerWebSocketSessions.deferProviderRequests?.(
-        webSocketUrl,
-        retryAfterMs,
-      );
-    }
+    deferProviderFailure(error);
     throw error;
   } finally {
     if (socketHandle !== undefined && !socketHandleReleased) {

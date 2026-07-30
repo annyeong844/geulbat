@@ -323,6 +323,7 @@ function projectRunChannelRuntimeContext(
     homeStateRoot: daemonContext.homeStateRoot,
     hostCommands: daemonContext.hostCommands,
     hostCommandInlineMaxBytes: daemonContext.hostCommandInlineMaxBytes,
+    publicHttpRead: daemonContext.publicHttpRead,
     childRuns: daemonContext.childRuns,
     fileStateCache: daemonContext.fileStateCache,
     imageGeneration: daemonContext.imageGeneration,

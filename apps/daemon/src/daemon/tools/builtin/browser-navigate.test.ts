@@ -68,10 +68,15 @@ void test('browser_navigate replacement replay returns the fresh-context result 
   const daemonContext = createDaemonContext();
   let observedUrl = '';
   let observedTimeoutMs: number | undefined;
+  let observedHasWorkingDirectory = true;
   const ptcBrowserNavigate: PtcBrowserNavigateRuntime = {
     async navigate(args) {
       observedUrl = args.request.url;
       observedTimeoutMs = args.request.timeoutMs;
+      observedHasWorkingDirectory = Object.hasOwn(
+        args.runContext,
+        'workingDirectory',
+      );
       return {
         ok: true,
         value: browserNavigateSummary(),
@@ -90,8 +95,6 @@ void test('browser_navigate replacement replay returns the fresh-context result 
     {
       callId: 'call-browser-navigate-success',
       stateRoot: '/workspace/home-state',
-
-      workingDirectory: 'project',
       threadId: testThreadId(931),
       runtimeServices: {
         ...daemonContext,
@@ -107,6 +110,7 @@ void test('browser_navigate replacement replay returns the fresh-context result 
     'https://example.com/private?access_token=secret#id_token=secret',
   );
   assert.equal(observedTimeoutMs, 1000);
+  assert.equal(observedHasWorkingDirectory, false);
   assert.doesNotMatch(result.output, /example\.com|access_token|id_token/u);
   const output = JSON.parse(result.output) as Record<string, unknown>;
   assert.equal(output.kind, 'ptc_lab_browser_user_url_navigation_result');

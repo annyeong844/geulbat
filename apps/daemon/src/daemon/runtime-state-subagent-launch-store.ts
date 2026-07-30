@@ -54,7 +54,8 @@ export function parsePersistedSubagentLaunchInput(
     typeof input['ownerThreadId'] !== 'string' ||
     typeof input['stateRoot'] !== 'string' ||
     !isAbsolute(input['stateRoot']) ||
-    typeof input['workingDirectory'] !== 'string' ||
+    (input['workingDirectory'] !== undefined &&
+      typeof input['workingDirectory'] !== 'string') ||
     (input['permissionMode'] !== undefined &&
       !isPermissionMode(input['permissionMode'])) ||
     (input['ultraReasoning'] !== undefined &&
@@ -93,7 +94,9 @@ export function parsePersistedSubagentLaunchInput(
     parentRunId: assertRunId(input['parentRunId']),
     ownerThreadId: assertThreadId(input['ownerThreadId']),
     stateRoot: input['stateRoot'],
-    workingDirectory: input['workingDirectory'],
+    ...(input['workingDirectory'] === undefined
+      ? {}
+      : { workingDirectory: input['workingDirectory'] }),
     ...(input['permissionMode'] === undefined
       ? {}
       : { permissionMode: input['permissionMode'] }),
@@ -379,7 +382,9 @@ export function retryInterruptedSubagentLaunch(
       parentRunId: args.parentRunId,
       ownerThreadId: args.ownerThreadId,
       stateRoot: args.stateRoot,
-      workingDirectory: args.workingDirectory,
+      ...(args.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: args.workingDirectory }),
       ...(args.permissionMode === undefined
         ? {}
         : { permissionMode: args.permissionMode }),

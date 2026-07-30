@@ -23,6 +23,8 @@ interface HostRoutedCommandInvocation {
   args: readonly string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+  /** 명령의 stdin으로 한 번만 전달할 exact bytes. */
+  initialStdin?: Uint8Array;
   timeoutMs?: number;
   streamMode?: CommandSessionStreamMode;
   /** 세션에 거는 스트림별 출력 상한. */
@@ -32,6 +34,10 @@ interface HostRoutedCommandInvocation {
 
 type HostRoutedCommandObservation =
   | { ok: true; snapshot: HostCommandSnapshot; stdout: string; stderr: string }
+  | { ok: false; aborted: boolean; message: string };
+
+export type HostRoutedCommandBytesObservation =
+  | { ok: true; snapshot: HostCommandSnapshot; stdout: Buffer; stderr: Buffer }
   | { ok: false; aborted: boolean; message: string };
 
 export async function runHostRoutedSystemCommand(args: {
@@ -59,39 +65,13 @@ export async function runHostRoutedSystemCommand(args: {
     pageLimitBytes,
     invocation,
   } = args;
-  // 직접 러너와 같은 사전 취소 처리 — 시작하지 않고 취소로 되돌린다.
-  if (invocation.signal?.aborted === true) {
-    return {
-      ok: false,
-      aborted: true,
-      message: 'command aborted before start',
-    };
-  }
-
-  const started = await hostCommands.start({
-    executable: invocation.executable,
-    args: [...invocation.args],
-    cwd: invocation.cwd,
-    env: invocation.env,
+  const started = await startHostRoutedSystemCommand({
+    hostCommands,
     stateRoot,
-    threadId: SYSTEM_SESSION_OWNER,
-    owner: 'system',
-    runId: 'system',
-    callId: 'system',
-    stdinMode: 'closed',
-    ...(invocation.timeoutMs === undefined
-      ? {}
-      : { timeoutMs: invocation.timeoutMs }),
-    ...(invocation.streamMode === undefined
-      ? {}
-      : { streamMode: invocation.streamMode }),
-    ...(invocation.maxOutputBytesPerStream === undefined
-      ? {}
-      : { maxOutputBytesPerStream: invocation.maxOutputBytesPerStream }),
-    ...(invocation.signal === undefined ? {} : { signal: invocation.signal }),
+    invocation,
   });
   if (!started.ok) {
-    return { ok: false, aborted: false, message: started.message };
+    return started;
   }
   if (invocation.streamMode === 'lossless') {
     return await readLosslessCommandToTerminal({
@@ -159,6 +139,92 @@ export async function runHostRoutedSystemCommand(args: {
     stdout: stdout.content,
     stderr: stderr.content,
   };
+}
+
+export async function runHostRoutedSystemCommandBytes(args: {
+  hostCommands: HostCommandRuntime;
+  stateRoot: string;
+  pageLimitBytes: number;
+  invocation: Omit<
+    HostRoutedCommandInvocation,
+    'maxOutputBytesPerStream' | 'streamMode'
+  > & {
+    maxOutputBytesPerStream: number;
+  };
+}): Promise<HostRoutedCommandBytesObservation> {
+  if (args.pageLimitBytes < 4) {
+    return {
+      ok: false,
+      aborted: false,
+      message: 'raw command output page budget must be at least 4 bytes',
+    };
+  }
+  const invocation: HostRoutedCommandInvocation = {
+    ...args.invocation,
+    streamMode: 'lossless',
+  };
+  const started = await startHostRoutedSystemCommand({
+    hostCommands: args.hostCommands,
+    stateRoot: args.stateRoot,
+    invocation,
+  });
+  if (!started.ok) {
+    return started;
+  }
+  return await readLosslessBytesCommandToTerminal({
+    hostCommands: args.hostCommands,
+    stateRoot: args.stateRoot,
+    outputRef: started.outputRef,
+    pageLimitBytes: Math.floor(args.pageLimitBytes / 4) * 3,
+    ...(invocation.signal === undefined ? {} : { signal: invocation.signal }),
+  });
+}
+
+async function startHostRoutedSystemCommand(args: {
+  hostCommands: HostCommandRuntime;
+  stateRoot: string;
+  invocation: HostRoutedCommandInvocation;
+}): Promise<
+  | { ok: true; outputRef: string }
+  | { ok: false; aborted: boolean; message: string }
+> {
+  const { hostCommands, stateRoot, invocation } = args;
+  // 직접 러너와 같은 사전 취소 처리 — 시작하지 않고 취소로 되돌린다.
+  if (invocation.signal?.aborted === true) {
+    return {
+      ok: false,
+      aborted: true,
+      message: 'command aborted before start',
+    };
+  }
+  const started = await hostCommands.start({
+    executable: invocation.executable,
+    args: [...invocation.args],
+    cwd: invocation.cwd,
+    env: invocation.env,
+    stateRoot,
+    threadId: SYSTEM_SESSION_OWNER,
+    owner: 'system',
+    runId: 'system',
+    callId: 'system',
+    stdinMode: 'closed',
+    ...(invocation.initialStdin === undefined
+      ? {}
+      : { initialStdin: invocation.initialStdin }),
+    ...(invocation.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: invocation.timeoutMs }),
+    ...(invocation.streamMode === undefined
+      ? {}
+      : { streamMode: invocation.streamMode }),
+    ...(invocation.maxOutputBytesPerStream === undefined
+      ? {}
+      : { maxOutputBytesPerStream: invocation.maxOutputBytesPerStream }),
+    ...(invocation.signal === undefined ? {} : { signal: invocation.signal }),
+  });
+  return started.ok
+    ? { ok: true, outputRef: started.outputRef }
+    : { ok: false, aborted: false, message: started.message };
 }
 
 async function readLosslessCommandToTerminal(args: {
@@ -259,6 +325,112 @@ async function readLosslessCommandToTerminal(args: {
   }
 }
 
+async function readLosslessBytesCommandToTerminal(args: {
+  hostCommands: HostCommandRuntime;
+  stateRoot: string;
+  outputRef: string;
+  pageLimitBytes: number;
+  signal?: AbortSignal;
+}): Promise<HostRoutedCommandBytesObservation> {
+  const initial = await args.hostCommands.waitForInitialResult({
+    stateRoot: args.stateRoot,
+    outputRef: args.outputRef,
+    yieldTimeMs: 0,
+    requiresOutputRef: true,
+    ...(args.signal === undefined ? {} : { signal: args.signal }),
+  });
+  if (!initial.ok) {
+    return {
+      ok: false,
+      aborted: initial.reasonCode === 'wait_aborted',
+      message: initial.message,
+    };
+  }
+  if (initial.value.outputRef === null) {
+    if (initial.value.stdoutBytes === 0 && initial.value.stderrBytes === 0) {
+      return {
+        ok: true,
+        snapshot: initial.value,
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.alloc(0),
+      };
+    }
+    return {
+      ok: false,
+      aborted: false,
+      message: 'raw command output was returned only as a text projection',
+    };
+  }
+
+  const offsets: Record<HostCommandOutputStream, number> = {
+    stdout: 0,
+    stderr: 0,
+  };
+  const output: Record<HostCommandOutputStream, Buffer[]> = {
+    stdout: [],
+    stderr: [],
+  };
+  let snapshot = initial.value;
+  for (;;) {
+    const stdout = await readLosslessBytesStreamPage({
+      ...args,
+      stream: 'stdout',
+      offsetBytes: offsets.stdout,
+    });
+    if (!stdout.ok) {
+      return stdout;
+    }
+    offsets.stdout = stdout.nextOffsetBytes;
+    output.stdout.push(stdout.content);
+    snapshot = stdout.snapshot;
+
+    const stderr = await readLosslessBytesStreamPage({
+      ...args,
+      stream: 'stderr',
+      offsetBytes: offsets.stderr,
+    });
+    if (!stderr.ok) {
+      return stderr;
+    }
+    offsets.stderr = stderr.nextOffsetBytes;
+    output.stderr.push(stderr.content);
+    snapshot = stderr.snapshot;
+
+    if (
+      stdout.hasMore ||
+      stderr.hasMore ||
+      offsets.stdout < snapshot.stdoutBytes ||
+      offsets.stderr < snapshot.stderrBytes
+    ) {
+      continue;
+    }
+    if (snapshot.status !== 'running') {
+      return {
+        ok: true,
+        snapshot,
+        stdout: Buffer.concat(output.stdout, offsets.stdout),
+        stderr: Buffer.concat(output.stderr, offsets.stderr),
+      };
+    }
+    const changed = await args.hostCommands.interact({
+      stateRoot: args.stateRoot,
+      threadId: SYSTEM_SESSION_OWNER,
+      owner: 'system',
+      outputRef: args.outputRef,
+      afterRevision: snapshot.revision,
+      ...(args.signal === undefined ? {} : { signal: args.signal }),
+    });
+    if (!changed.ok) {
+      return {
+        ok: false,
+        aborted: changed.reasonCode === 'wait_aborted',
+        message: changed.message,
+      };
+    }
+    snapshot = changed.value.snapshot;
+  }
+}
+
 async function readLosslessStreamPage(args: {
   hostCommands: HostCommandRuntime;
   stateRoot: string;
@@ -330,6 +502,103 @@ async function readLosslessStreamPage(args: {
   return {
     ok: true,
     content: page.content,
+    nextOffsetBytes: page.endOffsetBytes,
+    hasMore: page.hasMore,
+    snapshot: observed.value.snapshot,
+  };
+}
+
+async function readLosslessBytesStreamPage(args: {
+  hostCommands: HostCommandRuntime;
+  stateRoot: string;
+  outputRef: string;
+  stream: HostCommandOutputStream;
+  offsetBytes: number;
+  pageLimitBytes: number;
+  signal?: AbortSignal;
+}): Promise<
+  | {
+      ok: true;
+      content: Buffer;
+      nextOffsetBytes: number;
+      hasMore: boolean;
+      snapshot: HostCommandSnapshot;
+    }
+  | { ok: false; aborted: boolean; message: string }
+> {
+  const observed = await args.hostCommands.interact({
+    stateRoot: args.stateRoot,
+    threadId: SYSTEM_SESSION_OWNER,
+    owner: 'system',
+    outputRef: args.outputRef,
+    yieldTimeMs: 0,
+    page: {
+      stream: args.stream,
+      offsetBytes: args.offsetBytes,
+      limitBytes: args.pageLimitBytes,
+      encoding: 'base64',
+    },
+    ...(args.signal === undefined ? {} : { signal: args.signal }),
+  });
+  if (!observed.ok) {
+    return {
+      ok: false,
+      aborted: observed.reasonCode === 'wait_aborted',
+      message: observed.message,
+    };
+  }
+  const page = observed.value.page;
+  if (page === undefined) {
+    return {
+      ok: false,
+      aborted: false,
+      message: `host command ${args.stream} raw output page was missing.`,
+    };
+  }
+  if (page === null) {
+    const availableBytes =
+      args.stream === 'stdout'
+        ? observed.value.snapshot.stdoutBytes
+        : observed.value.snapshot.stderrBytes;
+    if (availableBytes > args.offsetBytes) {
+      return {
+        ok: false,
+        aborted: false,
+        message: `host command ${args.stream} raw output page was invalid.`,
+      };
+    }
+    return {
+      ok: true,
+      content: Buffer.alloc(0),
+      nextOffsetBytes: args.offsetBytes,
+      hasMore: false,
+      snapshot: observed.value.snapshot,
+    };
+  }
+  const content = Buffer.from(page.content, 'base64');
+  const expectedBytes = page.endOffsetBytes - page.offsetBytes;
+  const expectedNextOffset = page.hasMore ? page.endOffsetBytes : null;
+  if (
+    page.contentEncoding !== 'base64' ||
+    page.stream !== args.stream ||
+    page.offsetBytes !== args.offsetBytes ||
+    expectedBytes < 0 ||
+    page.endOffsetBytes > page.totalBytes ||
+    page.hasMore !== page.endOffsetBytes < page.totalBytes ||
+    page.nextOffsetBytes !== expectedNextOffset ||
+    content.length !== expectedBytes ||
+    content.toString('base64') !== page.content ||
+    (page.hasMore && expectedBytes === 0)
+  ) {
+    return {
+      ok: false,
+      aborted: false,
+      message: `host command ${args.stream} raw output page was invalid.`,
+    };
+  }
+  return {
+    ok: true,
+    content,
     nextOffsetBytes: page.endOffsetBytes,
     hasMore: page.hasMore,
     snapshot: observed.value.snapshot,

@@ -133,6 +133,43 @@ void test('T1: terminal-before-claim small output returns inline with zero disk 
   assert.equal(await directoryExists(paths.directory), false);
 });
 
+void test('a wall-clock rollback never exposes a negative running duration', async (t) => {
+  const fixture = await makeFixture(t, { maxYieldTimeMs: 1 });
+  const thread = threadId(9002);
+  const started = await fixture.host.start(
+    startArgs(fixture, thread, 'setInterval(() => undefined, 1_000);'),
+  );
+  assert.equal(started.ok, true);
+  if (!started.ok) {
+    return;
+  }
+
+  let observed: Awaited<ReturnType<CommandSessionHost['interact']>>;
+  try {
+    t.mock.method(Date, 'now', () => 0);
+    observed = await fixture.host.interact({
+      stateRoot: fixture.stateRoot,
+      threadId: thread,
+      outputRef: started.outputRef,
+      yieldTimeMs: 0,
+    });
+  } finally {
+    t.mock.restoreAll();
+    await fixture.host.interact({
+      stateRoot: fixture.stateRoot,
+      threadId: thread,
+      outputRef: started.outputRef,
+      terminate: true,
+      yieldTimeMs: 0,
+    });
+  }
+
+  assert.equal(observed.ok, true);
+  if (observed.ok) {
+    assert.equal(observed.value.snapshot.durationMs, 0);
+  }
+});
+
 void test('terminal-before-claim protocol output remains pageable', async (t) => {
   const fixture = await makeFixture(t);
   const thread = threadId(9003);
@@ -384,6 +421,49 @@ void test('idempotent start writes non-persisted initial stdin exactly once', as
     terminate: true,
     yieldTimeMs: 2_000,
   });
+});
+
+void test('initial stdin preserves arbitrary bytes exactly', async (t) => {
+  const fixture = await makeFixture(t);
+  const expected = Buffer.from([0x00, 0xff, 0xc3, 0x28, 0x41, 0x00]);
+  const started = await fixture.host.start(
+    startArgs(fixture, threadId(9037), 'process.stdin.pipe(process.stdout);', {
+      owner: 'system',
+      streamMode: 'lossless',
+      stdinMode: 'closed',
+      initialStdin: expected,
+    }),
+  );
+  assert.equal(started.ok, true);
+  if (!started.ok) {
+    return;
+  }
+
+  const claimed = await fixture.host.waitForInitialResult({
+    stateRoot: fixture.stateRoot,
+    outputRef: started.outputRef,
+    requiresOutputRef: true,
+  });
+  assert.equal(claimed.ok, true);
+  const observed = await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: SYSTEM_SESSION_OWNER,
+    owner: 'system',
+    outputRef: started.outputRef,
+    page: {
+      stream: 'stdout',
+      offsetBytes: 0,
+      limitBytes: 1024,
+      encoding: 'base64',
+    },
+  });
+  assert.equal(observed.ok, true);
+  if (observed.ok) {
+    assert.deepEqual(
+      Buffer.from(observed.value.page?.content ?? '', 'base64'),
+      expected,
+    );
+  }
 });
 
 void test(

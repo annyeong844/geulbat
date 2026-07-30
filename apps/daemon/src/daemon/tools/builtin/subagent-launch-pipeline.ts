@@ -78,7 +78,9 @@ export function restoreQueuedSubagentLaunchesForParent(args: {
           parentRunId: input.parentRunId,
           ownerThreadId: input.ownerThreadId,
           stateRoot: input.stateRoot,
-          workingDirectory: input.workingDirectory,
+          ...(input.workingDirectory === undefined
+            ? {}
+            : { workingDirectory: input.workingDirectory }),
           parentRunState,
           runtimeServices: args.runtimeServices,
           ...(args.emitAgentEvent === undefined
@@ -110,7 +112,7 @@ export async function runSubagentLaunchPipeline(args: {
   parentRunId: RunId;
   ownerThreadId: ThreadId;
   stateRoot: string;
-  workingDirectory: string;
+  workingDirectory?: string;
   parentRunState: ToolRunState;
   runtimeServices: AgentRuntimeServices;
   startBackgroundRun?: SubagentRunLauncher['startBackgroundRun'];
@@ -238,7 +240,9 @@ export async function runSubagentLaunchPipeline(args: {
       parentRunId: args.parentRunId,
       ownerThreadId: args.ownerThreadId,
       stateRoot: args.stateRoot,
-      workingDirectory: args.workingDirectory,
+      ...(args.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: args.workingDirectory }),
       parentRunState: args.parentRunState,
       runtimeServices: args.runtimeServices,
       launchReservation: launchAdmission.reservation,

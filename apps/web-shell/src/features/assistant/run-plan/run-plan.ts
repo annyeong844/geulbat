@@ -11,6 +11,7 @@ export const UPDATE_PLAN_TOOL_NAME = 'update_plan';
 type RunPlanStepStatus = 'pending' | 'in_progress' | 'completed';
 
 export interface RunPlanStep {
+  id?: string;
   step: string;
   status: RunPlanStepStatus;
 }
@@ -33,7 +34,15 @@ export function readRunPlanFromToolArgs(args: unknown): RunPlanStep[] | null {
     if (step === '' || !isRunPlanStepStatus(item.status)) {
       return null;
     }
-    steps.push({ step, status: item.status });
+    const id =
+      typeof item.id === 'string' && item.id.trim() !== ''
+        ? item.id.trim()
+        : null;
+    steps.push({
+      ...(id === null ? {} : { id }),
+      step,
+      status: item.status,
+    });
   }
   return steps.length > 0 ? steps : null;
 }

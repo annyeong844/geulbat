@@ -76,6 +76,21 @@ void test('exec description does not imply host access when callbacks are disabl
   );
 });
 
+void test('exec requires an explicitly selected working folder', async () => {
+  const result = await executeCodeTool.execute(
+    { code: 'return 1' },
+    {
+      callId: 'call-execute-code-no-cwd',
+      stateRoot: '/workspace/home-state',
+      threadId: testThreadId(912_0),
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'execution_failed');
+  assert.match(result.error ?? '', /Select a working folder/u);
+});
+
 void test('exec description shows the generated wrapper named require form', () => {
   assert.equal(
     executeCodeTool.description.includes(

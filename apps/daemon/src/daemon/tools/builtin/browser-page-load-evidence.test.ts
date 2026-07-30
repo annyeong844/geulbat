@@ -66,10 +66,15 @@ void test('browser_page_load_evidence replacement replay returns fresh explicit-
   const daemonContext = createDaemonContext();
   let observedUrl = '';
   let observedTimeoutMs: number | undefined;
+  let observedHasWorkingDirectory = true;
   const ptcBrowserPageLoadEvidence: PtcBrowserPageLoadEvidenceRuntime = {
     async collectEvidence(args) {
       observedUrl = args.request.url;
       observedTimeoutMs = args.request.timeoutMs;
+      observedHasWorkingDirectory = Object.hasOwn(
+        args.runContext,
+        'workingDirectory',
+      );
       return {
         ok: true,
         value: browserPageLoadEvidenceSummary(),
@@ -88,8 +93,6 @@ void test('browser_page_load_evidence replacement replay returns fresh explicit-
     {
       callId: 'call-browser-page-load-evidence-success',
       stateRoot: '/workspace/home-state',
-
-      workingDirectory: 'project',
       threadId: testThreadId(952),
       runtimeServices: {
         ...daemonContext,
@@ -108,6 +111,7 @@ void test('browser_page_load_evidence replacement replay returns fresh explicit-
     'https://example.com/private?access_token=secret#id_token=secret',
   );
   assert.equal(observedTimeoutMs, 1000);
+  assert.equal(observedHasWorkingDirectory, false);
   assert.doesNotMatch(result.output, /example\.com|access_token|id_token/u);
   const output = JSON.parse(result.output) as Record<string, unknown>;
   assert.equal(output.kind, 'ptc_lab_browser_page_load_evidence_result');

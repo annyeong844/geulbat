@@ -61,7 +61,9 @@ type RecordProviderRoundArgs = Omit<
 
 export interface AgentLoopHistoryPort {
   loadInitialHistory(args: LoadInitialHistoryArgs): Promise<HistoryItem[]>;
-  recordProviderRound?(args: RecordProviderRoundArgs): Promise<void>;
+  recordProviderRound?(
+    args: RecordProviderRoundArgs,
+  ): Promise<{ changed: boolean }>;
 }
 
 export function createAgentLoopHistoryPort(): Required<AgentLoopHistoryPort> {
@@ -83,11 +85,12 @@ export function createAgentLoopHistoryPort(): Required<AgentLoopHistoryPort> {
       const precedingTranscriptEntryId =
         suppliedTranscriptEntryId ??
         (await readLastTranscriptEntryId(workspaceRoot, args.threadId));
-      await appendProviderRound({
+      const appended = await appendProviderRound({
         ...providerRound,
         stateRoot: workspaceRoot,
         precedingTranscriptEntryId,
       });
+      return { changed: appended.changed };
     },
   };
 }

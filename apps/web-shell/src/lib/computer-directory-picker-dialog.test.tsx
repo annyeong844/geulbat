@@ -207,3 +207,53 @@ void test('directory picker retries the current folder after a transient fetch f
 
   await act(async () => renderer.unmount());
 });
+
+void test('directory picker exposes an optional action that does not select a folder', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ root: 'computer', tree: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  let cleared = false;
+  let selected = false;
+  let renderer!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ComputerDirectoryPickerDialog
+          title="시작 위치 선택"
+          confirmLabel="이 폴더 사용"
+          clearLabel="작업 폴더 없이 대화"
+          initialPath="home/writer"
+          browsePath="home/writer"
+          browseStartPath="home/writer"
+          browseShortcuts={[]}
+          onSelect={() => {
+            selected = true;
+          }}
+          onClear={() => {
+            cleared = true;
+          }}
+          onClose={() => {}}
+        />,
+      );
+    });
+
+    await act(async () => {
+      renderer.root
+        .findAllByType('button')
+        .find((button) => button.children.join('') === '작업 폴더 없이 대화')
+        ?.props.onClick();
+    });
+
+    assert.equal(cleared, true);
+    assert.equal(selected, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (renderer !== undefined) {
+      await act(async () => renderer.unmount());
+    }
+  }
+});

@@ -1415,6 +1415,7 @@ void test('restart recovery replays pure presentation tools through the product 
       },
       expectedOutput: {
         asked: true,
+        purpose: 'decision',
         optionCount: 2,
       },
     },

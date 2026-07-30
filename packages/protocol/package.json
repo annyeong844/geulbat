@@ -60,6 +60,10 @@
       "types": "./dist/files.d.ts",
       "import": "./dist/files.js"
     },
+    "./git-review": {
+      "types": "./dist/git-review.d.ts",
+      "import": "./dist/git-review.js"
+    },
     "./threads": {
       "types": "./dist/threads.d.ts",
       "import": "./dist/threads.js"

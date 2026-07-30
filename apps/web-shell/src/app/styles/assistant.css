@@ -995,7 +995,138 @@
   width: calc(100% - 32px);
 }
 
+.planning-workflow-collecting-control.has-decisions {
+  justify-content: space-between;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid
+    color-mix(in srgb, var(--secondary) 24%, var(--outline-variant));
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(
+      120deg,
+      color-mix(in srgb, var(--secondary) 8%, transparent),
+      transparent 58%
+    ),
+    var(--surface-container-low);
+}
+
+.planning-workflow-collecting-summary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.planning-workflow-collecting-mode {
+  flex: none;
+  font-weight: 650;
+}
+
+.planning-workflow-collecting-spark {
+  flex: none;
+  color: var(--secondary);
+  filter: drop-shadow(
+    0 0 5px color-mix(in srgb, var(--secondary) 58%, transparent)
+  );
+  animation: planning-workflow-spark 1.6s ease-in-out infinite;
+}
+
+@keyframes planning-workflow-spark {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.82) rotate(-8deg);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.08) rotate(5deg);
+  }
+}
+
+.planning-workflow-interview-ledger {
+  min-width: 0;
+}
+
+.planning-workflow-interview-ledger[open] {
+  flex-basis: 100%;
+}
+
+.planning-workflow-interview-ledger summary {
+  width: fit-content;
+  padding: 3px 7px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--secondary) 12%, transparent);
+  color: var(--secondary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  list-style-position: inside;
+}
+
+.planning-workflow-interview-ledger ol {
+  display: grid;
+  gap: 7px;
+  margin: 8px 0 2px;
+  padding-left: 20px;
+  color: var(--on-surface-variant);
+}
+
+.planning-workflow-interview-ledger[open] ol {
+  padding: 8px 10px 5px 28px;
+  border-left: 2px solid color-mix(in srgb, var(--secondary) 28%, transparent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: color-mix(
+    in srgb,
+    var(--secondary) 4%,
+    var(--surface-container-lowest)
+  );
+}
+
+.planning-workflow-interview-ledger li {
+  padding-left: 2px;
+}
+
+.planning-workflow-interview-ledger li.is-understanding-confirmation {
+  padding: 7px 8px;
+  border: 1px solid
+    color-mix(in srgb, var(--secondary) 24%, var(--outline-variant));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--secondary) 7%, transparent);
+  list-style: none;
+}
+
+.planning-workflow-interview-ledger li > small {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--secondary);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.planning-workflow-interview-ledger li > span,
+.planning-workflow-interview-ledger li > strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.planning-workflow-interview-ledger li > span {
+  color: var(--on-surface-muted);
+  font-size: 10.5px;
+}
+
+.planning-workflow-interview-ledger li > strong {
+  margin-top: 1px;
+  color: var(--on-surface);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
 .planning-workflow-collecting-cancel {
+  align-self: flex-start;
   background: transparent;
   border: 0;
   color: inherit;
@@ -1106,6 +1237,274 @@
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.planning-workflow-decision-ledger {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid
+    color-mix(in srgb, var(--secondary) 28%, var(--outline-variant));
+  border-radius: var(--radius-md);
+  background: color-mix(
+    in srgb,
+    var(--secondary) 6%,
+    var(--surface-container-lowest)
+  );
+}
+
+.planning-workflow-decision-ledger > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--on-surface-variant);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.planning-workflow-decision-ledger > header strong {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--secondary);
+  color: var(--on-secondary);
+  font-size: 10.5px;
+}
+
+.planning-workflow-decision-ledger ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.planning-workflow-decision-ledger li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.planning-workflow-decision-source {
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  background: var(--surface-container);
+  color: var(--on-surface-muted);
+  font-size: 9.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.planning-workflow-decision-source.user {
+  background: color-mix(in srgb, var(--secondary) 14%, transparent);
+  color: var(--secondary);
+}
+
+.planning-workflow-revision-summary {
+  border: 1px solid
+    color-mix(in srgb, var(--tertiary) 25%, var(--outline-variant));
+  border-radius: var(--radius-md);
+  background: color-mix(
+    in srgb,
+    var(--tertiary) 5%,
+    var(--surface-container-lowest)
+  );
+  color: var(--on-surface-variant);
+}
+
+.planning-workflow-revision-summary summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.planning-workflow-revision-summary summary strong {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--tertiary) 14%, transparent);
+  color: var(--tertiary);
+  font-size: 10px;
+}
+
+.planning-workflow-revision-summary p {
+  margin: 0;
+  padding: 0 10px 10px;
+  color: var(--on-surface-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.planning-workflow-revision-summary ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0 10px 10px;
+  list-style: none;
+}
+
+.planning-workflow-revision-summary li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.planning-workflow-revision-summary li > span:first-child {
+  font-family: var(--font-ui-mono);
+  font-weight: 700;
+  text-align: center;
+}
+
+.planning-workflow-revision-summary li.added > span:first-child {
+  color: var(--secondary);
+}
+
+.planning-workflow-revision-summary li.removed > span:first-child {
+  color: var(--error);
+}
+
+.planning-workflow-revision-summary li.changed > span:first-child {
+  color: var(--tertiary);
+}
+
+.planning-workflow-visual-preparing {
+  position: relative;
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid
+    color-mix(in srgb, var(--secondary) 26%, var(--outline-variant));
+  border-radius: var(--radius-md);
+  background:
+    radial-gradient(
+      circle at 14% 0%,
+      color-mix(in srgb, var(--secondary) 12%, transparent),
+      transparent 42%
+    ),
+    var(--surface-container-lowest);
+}
+
+.planning-workflow-visual-preparing.is-busy::after {
+  position: absolute;
+  inset: 0 auto 0 -35%;
+  width: 28%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--secondary) 9%, transparent),
+    transparent
+  );
+  content: '';
+  pointer-events: none;
+  animation: planning-workflow-visual-scan 2.4s ease-in-out infinite;
+}
+
+@keyframes planning-workflow-visual-scan {
+  to {
+    transform: translateX(485%);
+  }
+}
+
+.planning-workflow-visual-preparing > header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--on-surface-variant);
+  font-size: 11.5px;
+}
+
+.planning-workflow-visual-preparing > header span {
+  color: var(--secondary);
+  filter: drop-shadow(
+    0 0 5px color-mix(in srgb, var(--secondary) 52%, transparent)
+  );
+}
+
+.planning-workflow-visual-preparing-rail {
+  display: grid;
+  grid-template-columns:
+    minmax(54px, 0.7fr) auto minmax(54px, 0.7fr) auto
+    minmax(94px, 1.4fr);
+  align-items: stretch;
+  gap: 5px;
+}
+
+.planning-workflow-visual-preparing-node {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  gap: 2px;
+  padding: 7px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-low);
+  color: var(--on-surface-variant);
+  text-align: center;
+}
+
+.planning-workflow-visual-preparing-node.decisions {
+  border-color: color-mix(
+    in srgb,
+    var(--secondary) 34%,
+    var(--outline-variant)
+  );
+}
+
+.planning-workflow-visual-preparing-node.steps {
+  border-color: color-mix(in srgb, var(--tertiary) 34%, var(--outline-variant));
+}
+
+.planning-workflow-visual-preparing-node span {
+  font-size: 9.5px;
+}
+
+.planning-workflow-visual-preparing-node strong {
+  overflow: hidden;
+  color: var(--on-surface);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.planning-workflow-visual-preparing-node.outcome strong {
+  display: -webkit-box;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.planning-workflow-visual-preparing-connector {
+  align-self: center;
+  color: var(--secondary);
+  font-size: 12px;
+  animation: planning-workflow-connector-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes planning-workflow-connector-pulse {
+  50% {
+    opacity: 0.45;
+    transform: translateX(2px);
+  }
+}
+
+.planning-workflow-visual-preparing > p {
+  margin: 0;
+  color: var(--on-surface-muted);
+  font-size: 10.5px;
+  line-height: 1.4;
 }
 
 .planning-workflow-steps,
@@ -1252,6 +1651,13 @@
   white-space: nowrap;
 }
 
+.planning-workflow-visual-dialog-header p {
+  margin: 1px 0 0;
+  color: var(--on-surface-muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
 .planning-workflow-visual-dialog-header button {
   display: inline-grid;
   width: 32px;
@@ -1377,6 +1783,14 @@
   color: var(--error);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .planning-workflow-collecting-spark,
+  .planning-workflow-visual-preparing.is-busy::after,
+  .planning-workflow-visual-preparing-connector {
+    animation: none;
+  }
+}
+
 @media (max-width: 640px) {
   .planning-workflow-card-header {
     gap: 8px;
@@ -1390,5 +1804,10 @@
     width: calc(100vw - 20px);
     max-height: calc(100vh - 20px);
     border-radius: var(--radius-lg);
+  }
+
+  .planning-workflow-decision-ledger li {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
 }

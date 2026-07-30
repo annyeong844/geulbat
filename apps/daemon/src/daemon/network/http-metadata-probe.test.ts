@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import http from 'node:http';
 import test from 'node:test';
 import {
+  createPublicHttpReadMetadataProbeTransport,
   HttpMetadataProbeRuntimeError,
   REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID,
   probeHttpMetadata,
-  requestHttpMetadata,
   type HttpMetadataProbeRequestTransport,
 } from './http-metadata-probe.js';
 
@@ -211,33 +210,43 @@ void test('probeHttpMetadata accepts GET metadata for large response bodies with
   assert.equal(result.contentLength, 10_000_000);
 });
 
-void test('requestHttpMetadata resolves GET metadata without reading the response body', async () => {
-  const server = http.createServer((_request, response) => {
-    response.writeHead(200, {
-      'content-length': String(10_000_000),
-      'content-type': 'text/plain',
-    });
-    response.write(Buffer.alloc(1_000_000));
+void test('metadata probe host transport discards GET bodies and forwards timeouts', async () => {
+  let observed:
+    | {
+        url: string;
+        method: string;
+        headers: Record<string, string>;
+        responseBodyMode: string;
+        timeoutMs?: number;
+      }
+    | undefined;
+  const transport = createPublicHttpReadMetadataProbeTransport({
+    request: async (args) => {
+      observed = args;
+      return {
+        ok: true,
+        status: 200,
+        location: null,
+        contentType: 'text/plain',
+        contentLength: 10_000_000,
+        bodyBase64: '',
+      };
+    },
   });
 
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === 'object');
+  const result = await transport(new URL('https://esm.sh/large.js'), {
+    method: 'GET',
+    timeoutMs: 1234,
+  });
 
-    const result = await requestHttpMetadata(
-      new URL(`http://127.0.0.1:${address.port}/large.txt`),
-      { method: 'GET' },
-    );
-
-    assert.equal(result.status, 200);
-    assert.equal(result.contentLength, 10_000_000);
-    assert.equal(result.bytesRead, 0);
-  } finally {
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
-  }
+  assert.equal(observed?.url, 'https://esm.sh/large.js');
+  assert.equal(observed?.method, 'GET');
+  assert.equal(observed?.headers['accept-encoding'], 'identity');
+  assert.equal(observed?.responseBodyMode, 'discard');
+  assert.equal(observed?.timeoutMs, 1234);
+  assert.equal(result.status, 200);
+  assert.equal(result.contentLength, 10_000_000);
+  assert.equal(result.bytesRead, 0);
 });
 
 void test('probeHttpMetadata rejects redirect outside allowlist', async () => {

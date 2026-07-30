@@ -1,8 +1,6 @@
 import {
-  guardedLookupPublicAddress as guardedLookupPublicAddressBase,
   isUnsafeHttpAddress,
   parseHttpUrl,
-  type DnsAddress,
   type HttpLookup,
 } from '../../network/http-url-guard.js';
 import type { WebFetchFailureReasonCode } from './web-fetch-result.js';
@@ -26,16 +24,6 @@ export function parseWebFetchHttpUrl(
     reasonCode: result.reasonCode,
     message: result.message,
   };
-}
-
-export function guardedLookupPublicAddress(
-  hostname: string,
-  options: { lookup?: WebFetchLookup } = {},
-): Promise<DnsAddress> {
-  return guardedLookupPublicAddressBase(hostname, {
-    ...options,
-    label: 'fetch_url',
-  });
 }
 
 export function isUnsafeWebFetchAddress(address: string): boolean {

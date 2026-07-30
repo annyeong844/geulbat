@@ -440,6 +440,7 @@ void test('useComputerFiles conflict save-as-copy writes a new file and keeps th
   assert.equal(hook.result.current.saveConflict, null);
   assert.equal(hook.result.current.editorError, null);
   assert.equal(hook.result.current.selectedFile, 'notes (충돌 사본).md');
+  assert.equal(hook.result.current.mutationGeneration, 1);
   hook.unmount();
 });
 

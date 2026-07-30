@@ -262,6 +262,8 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
     recordEvent() {},
   };
   const onProviderRequestPrepared = () => undefined;
+  const onDurableProviderRequestPrepared = () => undefined;
+  const resumeProviderRequestIdentity = 'a'.repeat(64);
   const providerRuntimeStates: string[] = [];
   const onProviderRuntimeState = (observation: { state: string }) => {
     providerRuntimeStates.push(observation.state);
@@ -276,7 +278,9 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
     discoverySink?: unknown;
     providerWebSocketSessions?: unknown;
     providerReplayScopeId?: ProviderReplayScopeId;
+    resumeRequestIdentity?: string;
     onRequestPrepared?: unknown;
+    onDurableRequestPrepared?: unknown;
     onAdmissionState?: unknown;
   } = {};
 
@@ -291,6 +295,8 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
       providerRequestOptions,
       oauthWireDiscoverySink: discoverySink,
       onProviderRequestPrepared,
+      onDurableProviderRequestPrepared,
+      resumeProviderRequestIdentity,
       onProviderRuntimeState,
     },
     {
@@ -314,7 +320,11 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
         observed.providerWebSocketSessions = input.providerWebSocketSessions;
         observed.reasoningEffort = input.reasoningEffort;
         observed.discoverySink = input.discoverySink;
+        if (input.resumeRequestIdentity !== undefined) {
+          observed.resumeRequestIdentity = input.resumeRequestIdentity;
+        }
         observed.onRequestPrepared = input.onRequestPrepared;
+        observed.onDurableRequestPrepared = input.onDurableRequestPrepared;
         observed.onAdmissionState = input.onAdmissionState;
         input.onAdmissionState?.({ state: 'rate_limit_waiting' });
         input.onAdmissionState?.({ state: 'admitted' });
@@ -342,13 +352,20 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
   }
 
   assert.equal(observed.discoverySink, discoverySink);
+  assert.equal(observed.resumeRequestIdentity, resumeProviderRequestIdentity);
   assert.equal(observed.onRequestPrepared, onProviderRequestPrepared);
+  assert.equal(
+    observed.onDurableRequestPrepared,
+    onDurableProviderRequestPrepared,
+  );
   assert.equal(typeof observed.onAdmissionState, 'function');
   assert.deepEqual(
     {
       ...observed,
       discoverySink: undefined,
+      resumeRequestIdentity: undefined,
       onRequestPrepared: undefined,
+      onDurableRequestPrepared: undefined,
       onAdmissionState: undefined,
     },
     {
@@ -359,7 +376,9 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
       instructions: 'system\n\ncontext',
       reasoningEffort: 'high',
       discoverySink: undefined,
+      resumeRequestIdentity: undefined,
       onRequestPrepared: undefined,
+      onDurableRequestPrepared: undefined,
       onAdmissionState: undefined,
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerReplayScopeId: GROK_TEST_REPLAY_SCOPE_ID,
@@ -1258,6 +1277,10 @@ void test('callModelWithDependencies forces one refresh and retries once after c
   let streamCalls = 0;
   let forcedRefreshCalls = 0;
   const requestAttempts: unknown[] = [];
+  const resumeRequestIdentities: unknown[] = [];
+  const durablePreparedHandlers: unknown[] = [];
+  const resumeProviderRequestIdentity = 'b'.repeat(64);
+  const onDurableProviderRequestPrepared = () => undefined;
 
   for await (const chunk of callModelWithDependencies(
     {
@@ -1267,6 +1290,8 @@ void test('callModelWithDependencies forces one refresh and retries once after c
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
       providerRequestOptions: defaultProviderRequestOptions,
+      resumeProviderRequestIdentity,
+      onDurableProviderRequestPrepared,
     },
     {
       getProviderAuth: async () => ({
@@ -1283,6 +1308,8 @@ void test('callModelWithDependencies forces one refresh and retries once after c
       },
       streamResponsesOverWebSocket: async (request) => {
         requestAttempts.push(Reflect.get(request, 'requestAttempt'));
+        resumeRequestIdentities.push(request.resumeRequestIdentity);
+        durablePreparedHandlers.push(request.onDurableRequestPrepared);
         streamCalls += 1;
         if (streamCalls === 1) {
           assert.equal(
@@ -1313,6 +1340,14 @@ void test('callModelWithDependencies forces one refresh and retries once after c
   assert.equal(forcedRefreshCalls, 1);
   assert.equal(streamCalls, 2);
   assert.deepEqual(requestAttempts, [0, 1]);
+  assert.deepEqual(resumeRequestIdentities, [
+    resumeProviderRequestIdentity,
+    undefined,
+  ]);
+  assert.deepEqual(durablePreparedHandlers, [
+    onDurableProviderRequestPrepared,
+    onDurableProviderRequestPrepared,
+  ]);
   assert.deepEqual(chunks, [
     {
       type: 'done',
@@ -1519,6 +1554,7 @@ void test('callModelWithDependencies does not force refresh after a rate-limit f
         streamCalls += 1;
         throw Object.assign(new Error('too many requests'), {
           status: 429,
+          retryAfterMs: 2_500,
         });
       },
     },
@@ -1533,6 +1569,86 @@ void test('callModelWithDependencies does not force refresh after a rate-limit f
       type: 'error',
       code: 'llm_rate_limited',
       message: 'provider rate limited',
+      retryAfterMs: 2_500,
+    },
+  ]);
+});
+
+void test('callModelWithDependencies reports committed semantic output to the admission fallback resolver', async () => {
+  const chunks = [];
+  const observations: Array<{
+    sawSemanticChunk: boolean;
+    status: unknown;
+  }> = [];
+  const runtimeStore = createProviderAuthRuntimeStore();
+
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
+      resolveProviderAdmissionFallbackDelayMs({ error, sawSemanticChunk }) {
+        observations.push({
+          sawSemanticChunk,
+          status:
+            error === null || typeof error !== 'object'
+              ? undefined
+              : Reflect.get(error, 'status'),
+        });
+        return 777;
+      },
+    },
+    {
+      getProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      forceRefreshProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      streamResponsesOverWebSocket: async ({
+        onAssistantDelta,
+        resolveProviderAdmissionFallbackDelayMs,
+      }) => {
+        onAssistantDelta?.({
+          itemId: 'item-visible',
+          phase: 'final_answer',
+          text: 'visible',
+        });
+        const providerError = Object.assign(new Error('too many requests'), {
+          status: 429,
+        });
+        assert.equal(
+          resolveProviderAdmissionFallbackDelayMs?.(providerError),
+          777,
+        );
+        throw providerError;
+      },
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(observations, [
+    {
+      sawSemanticChunk: true,
+      status: 429,
+    },
+  ]);
+  assert.deepEqual(chunks, [
+    {
+      type: 'text_delta',
+      text: 'visible',
+      phase: 'final_answer',
+    },
+    {
+      type: 'error',
+      code: 'llm_rate_limited',
+      message: 'provider rate limited',
     },
   ]);
 });
@@ -1541,6 +1657,8 @@ void test('callModelWithDependencies routes Qwen without OAuth or Codex WebSocke
   const previousApiKey = process.env.BAILIAN_TOKEN_PLAN_API_KEY;
   process.env.BAILIAN_TOKEN_PLAN_API_KEY = 'x'.repeat(32);
   const chunks = [];
+  const resumeProviderRequestIdentity = 'c'.repeat(64);
+  const onDurableProviderRequestPrepared = () => undefined;
   const observed: {
     model?: string;
     history?: unknown[];
@@ -1548,6 +1666,8 @@ void test('callModelWithDependencies routes Qwen without OAuth or Codex WebSocke
     providerReplayScopeId?: ProviderReplayScopeId;
     providerSessionId?: string;
     requestAttempt?: number;
+    resumeRequestIdentity?: string;
+    onDurableRequestPrepared?: unknown;
     providerRequestSessions?: unknown;
   } = {};
 
@@ -1563,6 +1683,8 @@ void test('callModelWithDependencies routes Qwen without OAuth or Codex WebSocke
         providerRequestOptions: resolveProviderRequestOptions({
           GEULBAT_LLM_PROVIDER: 'qwen_token_plan',
         }),
+        resumeProviderRequestIdentity,
+        onDurableProviderRequestPrepared,
       },
       {
         getProviderAuth: async () =>
@@ -1583,6 +1705,10 @@ void test('callModelWithDependencies routes Qwen without OAuth or Codex WebSocke
           if (input.requestAttempt !== undefined) {
             observed.requestAttempt = input.requestAttempt;
           }
+          if (input.resumeRequestIdentity !== undefined) {
+            observed.resumeRequestIdentity = input.resumeRequestIdentity;
+          }
+          observed.onDurableRequestPrepared = input.onDurableRequestPrepared;
           observed.providerRequestSessions = input.providerRequestSessions;
           if (input.instructions !== undefined) {
             observed.instructions = input.instructions;
@@ -1635,6 +1761,11 @@ void test('callModelWithDependencies routes Qwen without OAuth or Codex WebSocke
   assert.match(observed.providerReplayScopeId ?? '', /^sha256:[a-f0-9]{64}$/u);
   assert.equal(observed.providerSessionId, 'provider-session');
   assert.equal(observed.requestAttempt, 0);
+  assert.equal(observed.resumeRequestIdentity, resumeProviderRequestIdentity);
+  assert.equal(
+    observed.onDurableRequestPrepared,
+    onDurableProviderRequestPrepared,
+  );
   assert.equal(
     observed.providerRequestSessions,
     unusedProviderWebSocketSessions,

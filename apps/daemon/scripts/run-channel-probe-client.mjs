@@ -176,6 +176,9 @@ export function collectRunChannelProbeAttempt(args) {
         if (event.threadId !== expectedThreadId) {
           return;
         }
+        if (message.runEventCursor === false) {
+          return;
+        }
         if (event.seq <= lastSeq) {
           throw new RunChannelProbeError(
             'run_channel_event_sequence_regressed',

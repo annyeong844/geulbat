@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 
@@ -23,6 +24,7 @@ import {
   type WrittenThreadMediaFile,
 } from '../sessions/media-file-store.js';
 import type { JsonValue } from '../runtime-json.js';
+import type { PublicHttpReadRuntime } from '../utils/public-http-read-port.js';
 import { z } from 'zod';
 import { blankCanvasDataUrl } from './blank-canvas.js';
 import {
@@ -52,7 +54,7 @@ import { withVideoGenerationRequestDefaults } from './video-generation-request-d
 
 // 동영상 생성의 데몬-프라이빗 진입점(video-generation-open §4.5) —
 // 소스 이미지 해석(투명 캔버스 브리지 포함) → 프로바이더 잡 → video.url
-// 스트리밍 다운로드 → 매직바이트/크기 검증 → media 파일 스토어 →
+// 격리·상한 적용 다운로드 → 매직바이트 검증 → media 파일 스토어 →
 // 매니페스트 커밋까지를 소유한다. 인라인 base64는 만들지 않는다(D-V7).
 
 export interface VideoGenerationRuntimeDeps {
@@ -61,7 +63,7 @@ export interface VideoGenerationRuntimeDeps {
   getProviderAuthImpl?: typeof getProviderAuth;
   forceRefreshProviderAuthImpl?: typeof forceRefreshProviderAuth;
   generateViaGrokImpl?: typeof generateVideoViaGrok;
-  downloadFetchImpl?: typeof fetch;
+  publicHttpRead: PublicHttpReadRuntime;
   commitThreadArtifactVersionImpl?: typeof commitThreadArtifactVersion;
   loadThreadArtifactVersionsByRefsImpl?: typeof loadThreadArtifactVersionsByRefs;
   writeThreadMediaFileFromStreamImpl?: typeof writeThreadMediaFileFromStream;
@@ -365,6 +367,7 @@ async function generateVideoOnce(
     auth: { accessToken: auth.accessToken },
     ...(providerHandle === undefined ? {} : { requestId: providerHandle }),
     ...(createRequestImpl === undefined ? {} : { createRequestImpl }),
+    publicHttpRead: deps.publicHttpRead,
     ...(recovery === undefined
       ? {}
       : {
@@ -387,7 +390,9 @@ function createDurableGrokVideoCreateRequest(
 ): GrokVideoCreateRequest | undefined {
   const recovery = input.recovery;
   const streamDurableEvents =
-    deps.providerWebSocketSessions?.streamDurableHttpSseEvents;
+    deps.providerWebSocketSessions?.streamDurableHttpSseEvents?.bind(
+      deps.providerWebSocketSessions,
+    );
   if (recovery === undefined || streamDurableEvents === undefined) {
     return undefined;
   }
@@ -467,10 +472,6 @@ function sniffVideoContainer(
   return null;
 }
 
-function asVideoByteChunk(value: unknown): Uint8Array | null {
-  return value instanceof Uint8Array ? value : null;
-}
-
 interface DownloadedVideo {
   written: WrittenThreadMediaFile;
   mimeType: string;
@@ -481,11 +482,17 @@ async function downloadVideoToMediaStore(
   deps: VideoGenerationRuntimeDeps,
   videoUrl: string,
 ): Promise<DownloadedVideo> {
-  const fetchImpl = deps.downloadFetchImpl ?? fetch;
-  let response: Response;
+  const maxBytes = resolveVideoMaxBytes();
+  let response: Awaited<ReturnType<PublicHttpReadRuntime['request']>>;
   try {
-    // 서명 URL은 TTL 불명 — 즉시 1회 다운로드, 재시도 없음(§4.5-3)
-    response = await fetchImpl(videoUrl, {
+    // 서명 URL은 TTL 불명 — command-host owner로 즉시 1회 다운로드하고
+    // 재시도는 replacement recovery만 결정한다(§4.5-3).
+    response = await deps.publicHttpRead.request({
+      url: videoUrl,
+      method: 'GET',
+      headers: { Accept: 'video/*' },
+      responseBodyMode: 'full',
+      maxResponseBytes: maxBytes,
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
     });
   } catch (error: unknown) {
@@ -499,7 +506,24 @@ async function downloadVideoToMediaStore(
       cause: error,
     });
   }
-  if (!response.ok || response.body === null) {
+  if (!response.ok) {
+    if (input.signal?.aborted === true || response.reasonCode === 'aborted') {
+      throw new Error('video generation was aborted during download');
+    }
+    if (response.reasonCode === 'response_too_large') {
+      throw new ImageGenerationError({
+        surface: 'candidate_validation',
+        reasonCode: 'video_too_large',
+        message: `generated video exceeds the size policy (${maxBytes} bytes)`,
+      });
+    }
+    throw new ImageGenerationError({
+      surface: 'provider_api',
+      reasonCode: 'provider_network_failed',
+      message: `generated video download owner failed (${response.reasonCode})`,
+    });
+  }
+  if (response.status < 200 || response.status >= 300) {
     throw new ImageGenerationError({
       surface: 'provider_api',
       reasonCode: 'provider_response_invalid',
@@ -507,17 +531,11 @@ async function downloadVideoToMediaStore(
     });
   }
 
-  // 첫 청크로 컨테이너를 스니핑한 뒤에야 파일 쓰기를 시작한다 — 형식 밖
-  // 바이트는 디스크에 닿지 않는다(fail-closed).
-  const reader = response.body.getReader();
-  const first = await reader.read();
-  const firstChunk =
-    first.done === true ? new Uint8Array(0) : asVideoByteChunk(first.value);
-  const container =
-    firstChunk === null ? null : sniffVideoContainer(firstChunk);
-  if (firstChunk === null || container === null) {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+  const videoBytes = Buffer.from(response.bodyBase64, 'base64');
+  // 완전한 bounded response의 첫 바이트로 컨테이너를 스니핑한 뒤에야 파일 쓰기를
+  // 시작한다 — 형식 밖 바이트와 부분 다운로드는 디스크에 닿지 않는다(fail-closed).
+  const container = sniffVideoContainer(videoBytes);
+  if (container === null) {
     throw new ImageGenerationError({
       surface: 'candidate_validation',
       reasonCode: 'invalid_video_bytes',
@@ -533,28 +551,9 @@ async function downloadVideoToMediaStore(
       threadId: input.threadId,
       extension: container.extension,
       stream: (async function* () {
-        try {
-          yield firstChunk;
-          while (true) {
-            const next = await reader.read();
-            if (next.done === true) {
-              return;
-            }
-            const nextChunk = asVideoByteChunk(next.value);
-            if (nextChunk === null) {
-              throw new ImageGenerationError({
-                surface: 'candidate_validation',
-                reasonCode: 'invalid_video_bytes',
-                message: 'downloaded bytes are not a supported video container',
-              });
-            }
-            yield nextChunk;
-          }
-        } finally {
-          reader.releaseLock();
-        }
+        yield videoBytes;
       })(),
-      maxBytes: resolveVideoMaxBytes(),
+      maxBytes,
     });
     return { written, mimeType: container.mimeType };
   } catch (error: unknown) {

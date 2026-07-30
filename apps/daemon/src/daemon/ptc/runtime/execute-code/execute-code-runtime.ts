@@ -477,13 +477,12 @@ export function createPtcExecuteCodeRuntime(
           recoveryResult?: PtcExecuteCodeRuntimeResult;
         }) => {
           if (args.recoveryResult !== undefined) {
-            const persistRecovery = cellTerminalResultStore.persistRecovery;
-            if (persistRecovery === undefined) {
+            if (cellTerminalResultStore.persistRecovery === undefined) {
               throw new Error(
                 'PTC execute_code terminal recovery persistence is unavailable',
               );
             }
-            await persistRecovery({
+            await cellTerminalResultStore.persistRecovery({
               stateRoot: args.stateRoot,
               threadId: args.threadId,
               cellId: args.cellId,
@@ -576,7 +575,7 @@ export function createPtcExecuteCodeRuntime(
     attachCellProcess: options.attachCellProcess,
     attachEpochCallbackController: options.attachEpochCallbackController,
     cellRegistry,
-    getStateRuntime: runtimeState.getStateRuntime,
+    getStateRuntime: (stateRoot) => runtimeState.getStateRuntime(stateRoot),
   });
 
   return {

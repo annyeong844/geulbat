@@ -114,11 +114,13 @@ export async function reconcilePtcExecuteCodeInvocation(args: {
     };
   }
 
-  const readTerminalRecovery = args.terminalResultStore?.readRecovery;
-  if (readTerminalRecovery !== undefined) {
-    let recovery: Awaited<ReturnType<typeof readTerminalRecovery>>;
+  const terminalResultStore = args.terminalResultStore;
+  if (terminalResultStore?.readRecovery !== undefined) {
+    let recovery: Awaited<
+      ReturnType<NonNullable<typeof terminalResultStore.readRecovery>>
+    >;
     try {
-      recovery = await readTerminalRecovery({
+      recovery = await terminalResultStore.readRecovery({
         stateRoot: args.runContext.stateRoot,
         threadId: args.runContext.threadId,
         cellId: args.cellId,

@@ -215,6 +215,7 @@ export function resolveAgentSpawnLaunchRequest(
       result: toolError(modelPinResolution.errorCode, modelPinResolution.error),
     };
   }
+  const workingDirectory = agentCtx?.workingDirectory ?? ctx.workingDirectory;
 
   return {
     ok: true,
@@ -227,8 +228,7 @@ export function resolveAgentSpawnLaunchRequest(
         parentRunId,
         ownerThreadId,
         stateRoot: ctx.stateRoot,
-        workingDirectory:
-          agentCtx?.workingDirectory ?? ctx.workingDirectory ?? '',
+        ...(workingDirectory === undefined ? {} : { workingDirectory }),
         ...(ctx.permissionMode === undefined
           ? {}
           : { permissionMode: ctx.permissionMode }),
@@ -428,7 +428,9 @@ export function createAgentSpawnTool(
           parentRunId: request.parentRunId,
           ownerThreadId: request.ownerThreadId,
           stateRoot: request.stateRoot,
-          workingDirectory: request.workingDirectory,
+          ...(request.workingDirectory === undefined
+            ? {}
+            : { workingDirectory: request.workingDirectory }),
           parentRunState,
           runtimeServices,
           ...(options.startBackgroundRun !== undefined

@@ -7,6 +7,12 @@ import { defineZodTool } from '../zod-tool.js';
 // web-shell이 tool_call args를 옵션 카드로 그리고, 사용자의 클릭이 일반
 // 사용자 메시지로 다음 턴을 시작한다 (visualize와 같은 args-렌더 패턴).
 const askUserArgsSchema = z.strictObject({
+  purpose: z
+    .enum(['decision', 'understanding_confirmation'])
+    .optional()
+    .describe(
+      'Use understanding_confirmation only for the final deep-planning checkpoint that restates the understood goal before proposing the plan.',
+    ),
   question: z
     .string()
     .min(1, 'question is required.')
@@ -56,6 +62,7 @@ export const askUserTool = defineZodTool({
       ok: true,
       output: JSON.stringify({
         asked: true,
+        purpose: args.purpose ?? 'decision',
         optionCount: args.options.length,
       }),
     };

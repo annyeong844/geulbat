@@ -3,10 +3,15 @@
  * Emits internal AgentEvents; adapter/web converts to RunEventEnvelope.
  */
 
+import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+
 import {
   agentLoopKernelImplementation,
   type AgentLoopKernelFailure,
+  type AgentLoopTerminalSource,
 } from '@geulbat/agent-loop/kernel';
+import { sha256StableJson } from '@geulbat/content-identity/stable-json';
 import {
   validateToolCapabilityPolicy,
   type ToolCapabilityPolicy,
@@ -18,7 +23,10 @@ import {
 } from '../runtime-contracts.js';
 
 import { createAgentEvent, type AgentEventEmitter } from './events.js';
-import type { AgentResult } from './agent-result.js';
+import {
+  createAgentResultPersistenceValue,
+  type AgentResult,
+} from './agent-result.js';
 import type { AgentInput } from './loop-types.js';
 import { loadOrCreateGeulbatInstructions } from './prompt/load-geulbat-md.js';
 import {
@@ -38,8 +46,11 @@ import {
 } from './observer/agent-loop-observer.js';
 import {
   assertAgentRunId as assertValidRunId,
+  isAgentArtifactRenderer,
+  isAgentModelSettlementIdentity,
   isAgentRunModelId,
   resolveAgentRunModelDescriptor,
+  type ModelSettlementIdentity,
 } from './contract.js';
 import { accumulateRunUsageTotals } from './runtime/run-usage-totals.js';
 import {
@@ -55,6 +66,11 @@ import {
   createModelRoundPort,
   type RunModelRoundArgs,
 } from './loop-model-round.js';
+import type {
+  RunCheckpoint,
+  RunCheckpointModelRoundSettlement,
+  RunCheckpointModelUsage,
+} from '../sessions/run-checkpoint-store.js';
 import { createAgentLoopPromptPort } from './loop-prompt.js';
 import { createAgentLoopStructuredOutputPort } from './loop-structured-output-port.js';
 import { createAgentLoopToolDefinitionPort } from './loop-tool-definitions.js';
@@ -71,7 +87,7 @@ import {
   normalizeProviderErrorCode,
   sanitizeProviderErrorMessage,
 } from '../llm/provider/provider-error.js';
-import { resolveProviderReplayScopeForRun } from '../llm/provider/provider-replay-scope.js';
+import { resolveProviderReplayScopeForRun } from '../llm/provider/provider-replay-scope-resolution.js';
 import { coerceGenericApiErrorCode } from '../error-codes.js';
 import type { GenericApiErrorCode } from '../error-codes.js';
 
@@ -111,9 +127,11 @@ import { createAgentLoopMemoryPort } from './memory/compaction-loop.js';
 import type {
   FunctionCall,
   ProviderStructuredOutput,
+  ProviderUsageTelemetry,
 } from '../llm/provider/wire/types.js';
 import { resolveAgentNoProgressPolicyFromEnv } from './no-progress-policy.js';
 import { createAgentRunCompletionPolicy } from './run-completion-policy.js';
+import { isJsonValue, isRecord, type JsonValue } from '../runtime-json.js';
 
 const RUN_MODEL_TOOL_DISCOVERY_BY_ID = {
   'gpt-5.6-sol': 'hosted_tool_search',
@@ -172,6 +190,15 @@ function resolveProviderToolExposure(args: {
   };
 }
 
+interface ActiveModelSettlementContext {
+  logicalRequestIdentity: ModelSettlementIdentity;
+  providerRequestIdentity: string;
+  candidateDigest: `sha256:${string}`;
+  candidateResult: AgentResult;
+  settlement: RunCheckpointModelRoundSettlement;
+  skipProviderHistoryAppend: boolean;
+}
+
 export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const {
     runId,
@@ -195,6 +222,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     toolSurface,
     toolCapabilityPolicy: requestedToolCapabilityPolicy,
     toolLibraryProjectionIdentity,
+    modelRoundRecovery,
     promptProfile = 'root',
     loopImplementation = agentLoopKernelImplementation,
     runtimeServices,
@@ -336,7 +364,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     threadId,
     promptProfile,
     computerSessionAvailable: runtimeServices.computerFileRoot !== undefined,
-    workingDirectory: runContext.workingDirectory,
+    ...(runContext.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: runContext.workingDirectory }),
     ...(providerDirectRegistryNames === undefined
       ? {}
       : { directRegistryNames: providerDirectRegistryNames }),
@@ -483,6 +513,29 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     lifecyclePort.settleAfterResult({ runState, result, signal });
     return result;
   }
+  const modelRoundClaimId = modelRoundRecovery?.claimId ?? randomUUID();
+  const modelRoundStart = modelRoundRecovery?.state.nextRound ?? 0;
+  const recoveredActiveModelRound = modelRoundRecovery?.state.active ?? null;
+  const recoveredModelRoundContinuation =
+    modelRoundRecovery?.state.continuation ?? null;
+  if (runState !== undefined && modelRoundRecovery !== undefined) {
+    const settledUsage = modelRoundRecovery.state.settledUsage;
+    runState.usageTotals.inputTokens = settledUsage.inputTokens;
+    runState.usageTotals.outputTokens = settledUsage.outputTokens;
+    runState.usageTotals.cachedInputTokens = settledUsage.cachedInputTokens;
+    const unsettledUsage =
+      recoveredActiveModelRound?.settlement !== null &&
+      recoveredActiveModelRound?.settlement !== undefined &&
+      recoveredActiveModelRound.settlement.phase !== 'committed'
+        ? recoveredActiveModelRound.settlement.usage
+        : undefined;
+    if (unsettledUsage !== undefined) {
+      accumulateRunUsageTotals(runState.usageTotals, unsettledUsage);
+    }
+  }
+  let activeProviderRequestIdentity: string | undefined =
+    recoveredActiveModelRound?.providerRequestIdentity;
+  let activeModelSettlement: ActiveModelSettlementContext | undefined;
   let endTurnAfterLastToolProcessing = false;
   let providerReplayScopeId: ProviderReplayScopeId | undefined;
   if (callModelImpl === undefined && injectedModelRoundPort === undefined) {
@@ -501,6 +554,50 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       lifecyclePort.settleAfterResult({ runState, result, signal });
       return result;
     }
+  }
+  if (
+    recoveredModelRoundContinuation !== null &&
+    (recoveredModelRoundContinuation.round + 1 !== modelRoundStart ||
+      recoveredModelRoundContinuation.logicalRequestIdentity !==
+        createModelSettlementIdentity(
+          runId,
+          recoveredModelRoundContinuation.round,
+        ))
+  ) {
+    const result = lifecyclePort.createTerminalFailure({
+      emit,
+      code: 'llm_provider_request_outcome_unknown',
+      message:
+        'durable model round continuation conflicts with the recovered run boundary',
+    });
+    lifecyclePort.settleAfterResult({ runState, result, signal });
+    return result;
+  }
+  if (
+    recoveredActiveModelRound !== null &&
+    (recoveredActiveModelRound.claimId !== modelRoundClaimId ||
+      recoveredActiveModelRound.round !== modelRoundStart ||
+      (recoveredActiveModelRound.logicalRequestIdentity !== null &&
+        recoveredActiveModelRound.logicalRequestIdentity !==
+          createModelSettlementIdentity(runId, modelRoundStart)) ||
+      recoveredActiveModelRound.providerId !==
+        providerRequestOptions.providerId ||
+      recoveredActiveModelRound.model !== providerRequestOptions.model ||
+      recoveredActiveModelRound.providerReplayScopeId !==
+        (providerReplayScopeId ?? null) ||
+      !isDeepStrictEqual(
+        recoveredActiveModelRound.toolLibraryProjectionIdentity,
+        toolLibraryProjection.identity,
+      ))
+  ) {
+    const result = lifecyclePort.createTerminalFailure({
+      emit,
+      code: 'llm_provider_request_outcome_unknown',
+      message:
+        'durable model round boundary conflicts with the recovered run configuration',
+    });
+    lifecyclePort.settleAfterResult({ runState, result, signal });
+    return result;
   }
   let history: HistoryItem[];
   try {
@@ -529,12 +626,20 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     lifecyclePort.settleAfterResult({ runState, result, signal });
     return result;
   }
+  if (recoveredModelRoundContinuation !== null) {
+    appendAssistantTextToHistory(
+      history,
+      recoveredModelRoundContinuation.historyText,
+      [],
+    );
+  }
   const completionPolicy = createAgentRunCompletionPolicy({
     runId: assertValidRunId(runId),
     threadId,
     planningWorkflows: runtimeServices.planningWorkflows,
     goals: runtimeServices.goals,
     backgroundNotifications: runtimeServices.backgroundNotifications,
+    childRuns: runtimeServices.childRuns,
     emit,
     ...(runState === undefined ? {} : { runState }),
     ...(planningWorkflow === undefined ? {} : { planningWorkflow }),
@@ -609,6 +714,112 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       },
     });
   };
+  const beginActiveModelSettlementEffects = async (): Promise<void> => {
+    const active = activeModelSettlement;
+    if (active === undefined) {
+      return;
+    }
+    if (
+      runtimeServices.runCheckpoints.beginModelRoundSettlementEffects ===
+      undefined
+    ) {
+      throw modelRoundCheckpointError(
+        'model round effect settlement owner is unavailable',
+      );
+    }
+    const mutation =
+      await runtimeServices.runCheckpoints.beginModelRoundSettlementEffects({
+        threadId,
+        runId: assertValidRunId(runId),
+        claimId: modelRoundClaimId,
+        logicalRequestIdentity: active.logicalRequestIdentity,
+        candidateDigest: active.candidateDigest,
+      });
+    assertModelRoundCheckpointMutation(
+      mutation,
+      'model round external effects',
+    );
+    const settlement = mutation.checkpoint.modelRoundState?.active?.settlement;
+    if (settlement === null || settlement === undefined) {
+      throw modelRoundCheckpointError(
+        'model round external effect boundary was not retained',
+      );
+    }
+    active.settlement = settlement;
+  };
+  const commitActiveModelSettlement = async (args: {
+    result: AgentResult;
+    disposition: 'continue' | 'terminal';
+    source: AgentLoopTerminalSource;
+    continuationHistoryText?: string;
+  }): Promise<AgentResult> => {
+    const active = activeModelSettlement;
+    if (active === undefined) {
+      return args.result;
+    }
+    const settledResult = attachModelSettlementIdentity(
+      args.result,
+      active.logicalRequestIdentity,
+    );
+    const persistedResult = serializeAgentResult(settledResult);
+    const resultDigest = createSha256Identity(persistedResult);
+    if (
+      runtimeServices.runCheckpoints.commitModelRoundSettlement === undefined
+    ) {
+      throw modelRoundCheckpointError(
+        'model round settlement commit owner is unavailable',
+      );
+    }
+    const mutation =
+      await runtimeServices.runCheckpoints.commitModelRoundSettlement({
+        threadId,
+        runId: assertValidRunId(runId),
+        claimId: modelRoundClaimId,
+        logicalRequestIdentity: active.logicalRequestIdentity,
+        candidateDigest: active.candidateDigest,
+        resultDigest,
+        result: persistedResult,
+        disposition: args.disposition,
+        source: args.source,
+        continuationHistoryText: args.continuationHistoryText ?? null,
+      });
+    assertModelRoundCheckpointMutation(mutation, 'model round settlement');
+    const settlement = mutation.checkpoint.modelRoundState?.active?.settlement;
+    if (
+      settlement?.phase !== 'committed' ||
+      settlement.result === null ||
+      settlement.source === null ||
+      settlement.disposition === null ||
+      settlement.committedAt === null
+    ) {
+      throw modelRoundCheckpointError(
+        'committed model round settlement was not retained',
+      );
+    }
+    active.settlement = settlement;
+    return settledResult;
+  };
+  const completeActiveModelSettlement = async (): Promise<void> => {
+    const active = activeModelSettlement;
+    if (active === undefined) {
+      return;
+    }
+    if (runtimeServices.runCheckpoints.completeModelRound === undefined) {
+      throw modelRoundCheckpointError(
+        'model round completion owner is unavailable',
+      );
+    }
+    const mutation = await runtimeServices.runCheckpoints.completeModelRound({
+      threadId,
+      runId: assertValidRunId(runId),
+      claimId: modelRoundClaimId,
+      logicalRequestIdentity: active.logicalRequestIdentity,
+      providerRequestIdentity: active.providerRequestIdentity,
+    });
+    assertModelRoundCheckpointMutation(mutation, 'model round completion');
+    activeProviderRequestIdentity = undefined;
+    activeModelSettlement = undefined;
+  };
   recordAgentLoopObserverSnapshot(
     observer,
     buildAgentLoopObserverSnapshot({
@@ -660,6 +871,14 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         }
       },
       async runModelRound({ round }) {
+        const effectiveRound = modelRoundStart + round;
+        const logicalRequestIdentity = createModelSettlementIdentity(
+          runId,
+          effectiveRound,
+        );
+        const recoveredBoundary =
+          round === 0 ? recoveredActiveModelRound : null;
+        activeModelSettlement = undefined;
         completedContextBudgetRound = undefined;
         const contextBudgetRound = memoryPort.beginContextBudgetRound({
           workspaceRoot: stateRoot,
@@ -670,6 +889,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           ...(providerDeferredToolDefs === undefined
             ? {}
             : { deferredTools: providerDeferredToolDefs }),
+          providerWebSocketSessions: webSocketSessions,
           providerAuthRuntime,
           providerRequestOptions,
           ...(providerReplayScopeId === undefined
@@ -683,7 +903,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         const modelRoundArgs: RunModelRoundArgs = {
           history,
           systemPrompt,
-          round,
+          round: effectiveRound,
           toolDefs,
           ...(providerDeferredToolDefs === undefined
             ? {}
@@ -699,6 +919,69 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           streamArgsToolNames,
           onProviderRequestPrepared:
             contextBudgetRound.onProviderRequestPrepared,
+          ...(recoveredBoundary === null
+            ? {}
+            : {
+                initialModelRoundAttempt: recoveredBoundary.modelRoundAttempt,
+                resumeProviderRequestIdentity:
+                  recoveredBoundary.providerRequestIdentity,
+              }),
+          async onDurableProviderRequestPrepared(snapshot) {
+            if (
+              runtimeServices.runCheckpoints.recordModelRoundPrepared ===
+              undefined
+            ) {
+              throw modelRoundCheckpointError(
+                'provider request preparation owner is unavailable',
+              );
+            }
+            const mutation =
+              await runtimeServices.runCheckpoints.recordModelRoundPrepared({
+                threadId,
+                runId: assertValidRunId(runId),
+                active: {
+                  round: effectiveRound,
+                  claimId: modelRoundClaimId,
+                  modelRoundAttempt: snapshot.modelRoundAttempt,
+                  providerRequestAttempt: snapshot.providerRequestAttempt,
+                  providerId: providerRequestOptions.providerId,
+                  model: providerRequestOptions.model,
+                  transportKind: snapshot.transportKind,
+                  providerRequestIdentity: snapshot.requestIdentity,
+                  contextDigest: snapshot.contextDigest,
+                  toolLibraryProjectionIdentity: toolLibraryProjection.identity,
+                  responseFormat: null,
+                  providerReplayScopeId: providerReplayScopeId ?? null,
+                  logicalRequestIdentity,
+                },
+              });
+            assertModelRoundCheckpointMutation(
+              mutation,
+              'provider request preparation',
+            );
+            activeProviderRequestIdentity = snapshot.requestIdentity;
+          },
+          async onDurableProviderPhase(snapshot) {
+            if (
+              runtimeServices.runCheckpoints.markModelRoundPhase === undefined
+            ) {
+              throw modelRoundCheckpointError(
+                'provider request phase owner is unavailable',
+              );
+            }
+            const mutation =
+              await runtimeServices.runCheckpoints.markModelRoundPhase({
+                threadId,
+                runId: assertValidRunId(runId),
+                claimId: modelRoundClaimId,
+                providerRequestIdentity: snapshot.providerRequestIdentity,
+                phase: snapshot.phase,
+              });
+            assertModelRoundCheckpointMutation(
+              mutation,
+              `provider request ${snapshot.phase}`,
+            );
+          },
           onContextPreparationRequired: async () =>
             await contextBudgetRound.prepareBeforeModelRound(),
         };
@@ -764,16 +1047,78 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         } finally {
           unsubscribeInterjectFlush?.();
         }
-        if (modelRound.ok && runState !== undefined) {
-          accumulateRunUsageTotals(
-            runState.usageTotals,
+        if (modelRound.ok && activeProviderRequestIdentity !== undefined) {
+          const candidateDigest = createModelRoundCandidateDigest(
+            modelRound.value,
+          );
+          const usage = normalizeModelRoundUsage(
             modelRound.value.providerUsageTelemetry,
           );
-          if (modelRound.value.providerUsageTelemetry !== undefined) {
-            emit('usage_updated', { ...runState.usageTotals });
+          if (
+            runtimeServices.runCheckpoints
+              .recordModelRoundSettlementCandidate === undefined
+          ) {
+            throw modelRoundCheckpointError(
+              'model round settlement owner is unavailable',
+            );
+          }
+          const mutation =
+            await runtimeServices.runCheckpoints.recordModelRoundSettlementCandidate(
+              {
+                threadId,
+                runId: assertValidRunId(runId),
+                claimId: modelRoundClaimId,
+                logicalRequestIdentity,
+                providerRequestIdentity: activeProviderRequestIdentity,
+                candidateDigest,
+                usage,
+              },
+            );
+          assertModelRoundCheckpointMutation(
+            mutation,
+            'model round settlement candidate',
+          );
+          const settlement =
+            mutation.checkpoint.modelRoundState?.active?.settlement;
+          if (
+            settlement === null ||
+            settlement === undefined ||
+            settlement.candidateDigest !== candidateDigest
+          ) {
+            throw modelRoundCheckpointError(
+              'model round settlement candidate was not retained',
+            );
+          }
+          activeModelSettlement = {
+            logicalRequestIdentity,
+            providerRequestIdentity: activeProviderRequestIdentity,
+            candidateDigest,
+            candidateResult: modelRound.value.terminalResult,
+            settlement,
+            skipProviderHistoryAppend: false,
+          };
+          if (mutation.changed && runState !== undefined) {
+            accumulateRunUsageTotals(runState.usageTotals, usage);
+            if (hasModelRoundUsage(usage)) {
+              emit('usage_updated', { ...runState.usageTotals });
+            }
+          }
+          if (settlement.phase === 'effects_started') {
+            return {
+              ok: false,
+              result: lifecyclePort.createTerminalFailure({
+                emit,
+                code: 'llm_provider_request_outcome_unknown',
+                message:
+                  'model round effects started before restart; refusing to repeat an unknown external effect',
+              }),
+            };
           }
         }
         if (modelRound.ok) {
+          if (activeModelSettlement?.settlement.phase === 'committed') {
+            return modelRound;
+          }
           const providerItems = modelRound.value.itemsToAppend;
           let roundReplayScopeId = providerReplayScopeId;
           if (
@@ -811,6 +1156,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             ...(providerDeferredToolDefs === undefined
               ? {}
               : { deferredTools: providerDeferredToolDefs }),
+            providerWebSocketSessions: webSocketSessions,
             providerAuthRuntime,
             providerRequestOptions,
             contextBudgetRound,
@@ -854,39 +1200,89 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             providerItems.every((item) => item.kind === 'backend_item') &&
             roundReplayScopeId !== undefined
           ) {
-            await historyPort.recordProviderRound({
-              workspaceRoot: stateRoot,
-              threadId,
-              runId: assertValidRunId(runId),
-              round,
-              providerId: providerRequestOptions.providerId,
-              model: providerRequestOptions.model,
-              replayScopeId: roundReplayScopeId,
-              ...(compaction.kind === 'compacted'
-                ? {
-                    precedingTranscriptEntryId:
-                      compaction.providerRoundAnchorEntryId,
-                  }
-                : {}),
-              items: providerItems.map((item) => item.data),
-              functionCalls: modelRound.value.functionCalls.map((call) => {
-                const recoveryStrategy = registry.getToolMeta(
-                  call.name,
-                )?.recoveryStrategy;
-                return {
-                  ...call,
-                  replaySafe: recoveryStrategy === 'replay_safe',
-                  ...(recoveryStrategy === undefined
-                    ? {}
-                    : { recoveryStrategy }),
-                };
-              }),
-            });
+            const recordedProviderRound = await historyPort.recordProviderRound(
+              {
+                workspaceRoot: stateRoot,
+                threadId,
+                runId: assertValidRunId(runId),
+                round: effectiveRound,
+                providerId: providerRequestOptions.providerId,
+                model: providerRequestOptions.model,
+                replayScopeId: roundReplayScopeId,
+                ...(compaction.kind === 'compacted'
+                  ? {
+                      precedingTranscriptEntryId:
+                        compaction.providerRoundAnchorEntryId,
+                    }
+                  : {}),
+                items: providerItems.map((item) => item.data),
+                ...(activeModelSettlement === undefined
+                  ? {}
+                  : {
+                      modelSettlementIdentity:
+                        activeModelSettlement.logicalRequestIdentity,
+                    }),
+                functionCalls: modelRound.value.functionCalls.map((call) => {
+                  const recoveryStrategy = registry.getToolMeta(
+                    call.name,
+                  )?.recoveryStrategy;
+                  return {
+                    ...call,
+                    replaySafe: recoveryStrategy === 'replay_safe',
+                    ...(recoveryStrategy === undefined
+                      ? {}
+                      : { recoveryStrategy }),
+                  };
+                }),
+              },
+            );
+            if (
+              activeModelSettlement !== undefined &&
+              !recordedProviderRound.changed
+            ) {
+              activeModelSettlement.skipProviderHistoryAppend = true;
+            }
           }
         }
         return modelRound;
       },
+      async resolveRecoveredModelRound() {
+        const settlement = activeModelSettlement?.settlement;
+        if (settlement?.phase !== 'committed') {
+          return undefined;
+        }
+        if (
+          settlement.result === null ||
+          settlement.disposition === null ||
+          settlement.source === null ||
+          settlement.committedAt === null
+        ) {
+          throw modelRoundCheckpointError(
+            'committed model round settlement is incomplete',
+          );
+        }
+        const result = parsePersistedAgentResult(settlement.result);
+        if (settlement.disposition === 'continue') {
+          if (settlement.continuationHistoryText !== null) {
+            appendAssistantTextToHistory(
+              history,
+              settlement.continuationHistoryText,
+              [],
+            );
+          }
+          await completeActiveModelSettlement();
+          return { kind: 'continue' as const };
+        }
+        return {
+          kind: 'terminal' as const,
+          result,
+          source: settlement.source,
+        };
+      },
       async processStructuredOutputs({ structuredOutputs, functionCalls }) {
+        if (structuredOutputs.length > 0) {
+          await beginActiveModelSettlementEffects();
+        }
         return structuredOutputPort.processStructuredOutputs({
           runContext,
           structuredOutputs: [...structuredOutputs],
@@ -898,16 +1294,32 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         appendAssistantTextToHistory(history, text, [...functionCalls]);
       },
       appendHistoryItems(items) {
+        if (activeModelSettlement?.skipProviderHistoryAppend === true) {
+          return;
+        }
         history.push(...items);
       },
       appendFunctionCalls(functionCalls) {
         appendFunctionCallsToHistory(history, [...functionCalls]);
       },
       async processFunctionCalls({ context, functionCalls }) {
-        return await processRoundFunctionCalls({
-          round: context.round,
+        const processing = await processRoundFunctionCalls({
+          round: modelRoundStart + context.round,
           functionCalls,
         });
+        if (
+          processing.ok &&
+          activeModelSettlement !== undefined &&
+          !endTurnAfterLastToolProcessing
+        ) {
+          await commitActiveModelSettlement({
+            result: activeModelSettlement.candidateResult,
+            disposition: 'continue',
+            source: 'tool_completion',
+          });
+          await completeActiveModelSettlement();
+        }
+        return processing;
       },
       shouldEndTurnAfterFunctionCalls({ functionCalls }) {
         return (
@@ -916,10 +1328,26 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         );
       },
       async resolveTerminalCandidate({ source, result }) {
-        return await completionPolicy.resolveTerminalCandidate({
+        const decision = await completionPolicy.resolveTerminalCandidate({
           source,
           result,
         });
+        if (decision.kind === 'continue') {
+          if (decision.historyText !== undefined) {
+            appendAssistantTextToHistory(history, decision.historyText, []);
+          }
+          await commitActiveModelSettlement({
+            result,
+            disposition: 'continue',
+            source,
+            ...(decision.historyText === undefined
+              ? {}
+              : { continuationHistoryText: decision.historyText }),
+          });
+          await completeActiveModelSettlement();
+          return { kind: 'continue' };
+        }
+        return decision;
       },
       createTerminalFailure(failure) {
         if (runState !== undefined) {
@@ -931,7 +1359,13 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           message: failure.message,
         });
       },
-      settleTerminal({ result, source }) {
+      async settleTerminal({ result, source }) {
+        const settledResult = await commitActiveModelSettlement({
+          result,
+          disposition: 'terminal',
+          source,
+        });
+        replaceAgentResult(result, settledResult);
         if (runState !== undefined) {
           closeInterjectBuffer(runState.interject);
         }
@@ -948,5 +1382,224 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         );
       },
     },
+  });
+}
+
+function createModelSettlementIdentity(
+  runId: string,
+  round: number,
+): ModelSettlementIdentity {
+  return createSha256Identity({
+    schema: 'geulbat-model-settlement-v1',
+    runId,
+    round,
+  });
+}
+
+function createModelRoundCandidateDigest(value: {
+  assistantText: string;
+  terminalResult: AgentResult;
+  functionCalls: readonly FunctionCall[];
+  itemsToAppend?: readonly HistoryItem[];
+  structuredOutputs?: readonly ProviderStructuredOutput[];
+  providerUsageTelemetry?: ProviderUsageTelemetry;
+}): `sha256:${string}` {
+  return createSha256Identity(
+    serializeJsonValue(
+      {
+        assistantText: value.assistantText,
+        terminalResult: serializeAgentResult(value.terminalResult),
+        functionCalls: value.functionCalls,
+        itemsToAppend: value.itemsToAppend ?? null,
+        structuredOutputs: value.structuredOutputs ?? [],
+        usage: normalizeModelRoundUsage(value.providerUsageTelemetry),
+      },
+      'model round settlement candidate',
+    ),
+  );
+}
+
+function createSha256Identity(value: JsonValue): `sha256:${string}` {
+  return `sha256:${sha256StableJson(value)}`;
+}
+
+function normalizeModelRoundUsage(
+  usage: ProviderUsageTelemetry | undefined,
+): RunCheckpointModelUsage {
+  return {
+    inputTokens: usage?.inputTokens ?? 0,
+    outputTokens: usage?.outputTokens ?? 0,
+    cachedInputTokens: usage?.cachedInputTokens ?? 0,
+  };
+}
+
+function hasModelRoundUsage(usage: RunCheckpointModelUsage): boolean {
+  return (
+    usage.inputTokens > 0 ||
+    usage.outputTokens > 0 ||
+    usage.cachedInputTokens > 0
+  );
+}
+
+function attachModelSettlementIdentity(
+  result: AgentResult,
+  identity: ModelSettlementIdentity,
+): AgentResult {
+  if (
+    result.modelSettlementIdentity !== undefined &&
+    result.modelSettlementIdentity !== identity
+  ) {
+    throw modelRoundCheckpointError(
+      'agent result carries a conflicting model settlement identity',
+    );
+  }
+  return { ...result, modelSettlementIdentity: identity };
+}
+
+function serializeAgentResult(result: AgentResult): JsonValue {
+  return serializeJsonValue(
+    createAgentResultPersistenceValue(result),
+    'agent result',
+  );
+}
+
+function serializeJsonValue(value: unknown, label: string): JsonValue {
+  let parsed: unknown;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) {
+      throw new Error('value is not serializable');
+    }
+    parsed = JSON.parse(serialized) as unknown;
+  } catch (error: unknown) {
+    throw modelRoundCheckpointError(
+      `${label} is not JSON-serializable: ${
+        error instanceof Error ? error.message : 'serialization failed'
+      }`,
+    );
+  }
+  if (!isJsonValue(parsed)) {
+    throw modelRoundCheckpointError(`${label} is not a JSON value`);
+  }
+  return parsed;
+}
+
+function parsePersistedAgentResult(value: JsonValue): AgentResult {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'ok',
+      'finalProse',
+      'artifactCandidate',
+      'modelSettlementIdentity',
+    ]) ||
+    typeof value['ok'] !== 'boolean' ||
+    typeof value['finalProse'] !== 'string' ||
+    !isAgentModelSettlementIdentity(value['modelSettlementIdentity'])
+  ) {
+    throw modelRoundCheckpointError(
+      'persisted model settlement result is invalid',
+    );
+  }
+  const artifactCandidate =
+    value['artifactCandidate'] === undefined
+      ? undefined
+      : parsePersistedArtifactCandidate(value['artifactCandidate']);
+  return {
+    ok: value['ok'],
+    finalProse: value['finalProse'],
+    ...(artifactCandidate === undefined ? {} : { artifactCandidate }),
+    modelSettlementIdentity: value['modelSettlementIdentity'],
+  };
+}
+
+function parsePersistedArtifactCandidate(
+  value: unknown,
+): NonNullable<AgentResult['artifactCandidate']> {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['renderer', 'payload', 'digest', 'updateTarget']) ||
+    !isAgentArtifactRenderer(value['renderer']) ||
+    typeof value['payload'] !== 'string' ||
+    (value['digest'] !== null && typeof value['digest'] !== 'string')
+  ) {
+    throw modelRoundCheckpointError(
+      'persisted model settlement artifact is invalid',
+    );
+  }
+  const updateTarget = value['updateTarget'];
+  if (updateTarget === undefined) {
+    return {
+      renderer: value['renderer'],
+      payload: value['payload'],
+      digest: value['digest'],
+    };
+  }
+  if (
+    !isRecord(updateTarget) ||
+    !hasOnlyKeys(updateTarget, ['artifactId', 'baseVersion']) ||
+    typeof updateTarget['artifactId'] !== 'string' ||
+    updateTarget['artifactId'].trim() === '' ||
+    typeof updateTarget['baseVersion'] !== 'number' ||
+    !Number.isSafeInteger(updateTarget['baseVersion']) ||
+    updateTarget['baseVersion'] < 1
+  ) {
+    throw modelRoundCheckpointError(
+      'persisted model settlement artifact update target is invalid',
+    );
+  }
+  return {
+    renderer: value['renderer'],
+    payload: value['payload'],
+    digest: value['digest'],
+    updateTarget: {
+      artifactId: updateTarget['artifactId'],
+      baseVersion: updateTarget['baseVersion'],
+    },
+  };
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function replaceAgentResult(target: AgentResult, source: AgentResult): void {
+  target.ok = source.ok;
+  target.finalProse = source.finalProse;
+  if (source.artifactCandidate === undefined) {
+    delete target.artifactCandidate;
+  } else {
+    target.artifactCandidate = source.artifactCandidate;
+  }
+  if (source.modelSettlementIdentity === undefined) {
+    delete target.modelSettlementIdentity;
+  } else {
+    target.modelSettlementIdentity = source.modelSettlementIdentity;
+  }
+}
+
+function assertModelRoundCheckpointMutation(
+  result: { ok: boolean; code?: string },
+  action: string,
+): asserts result is {
+  ok: true;
+  checkpoint: RunCheckpoint;
+  changed: boolean;
+} {
+  if (result.ok) {
+    return;
+  }
+  throw modelRoundCheckpointError(
+    `${action} was rejected${result.code === undefined ? '' : `: ${result.code}`}`,
+  );
+}
+
+function modelRoundCheckpointError(message: string): Error {
+  return Object.assign(new Error(message), {
+    llmCode: 'llm_provider_request_outcome_unknown' as const,
   });
 }

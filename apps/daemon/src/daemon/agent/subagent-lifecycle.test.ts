@@ -294,11 +294,13 @@ void test('beginBackgroundChildLifecycle unloads the registry body after durable
 void test('beginBackgroundChildLifecycle does not leave a child active when terminal publication fails', () => {
   const runtimeServices = createDaemonContext();
   let attemptedTerminalResult: string | undefined;
+  let attemptedDeliveryId: string | undefined;
   runtimeServices.backgroundNotifications.enqueueThreadBackgroundResult = (
     _threadId,
     result,
   ) => {
     attemptedTerminalResult = result.result;
+    attemptedDeliveryId = result.deliveryId;
     throw new Error('terminal publication unavailable');
   };
   let releaseCount = 0;
@@ -342,6 +344,12 @@ void test('beginBackgroundChildLifecycle does not leave a child active when term
       runtimeServices.childRuns.getChildRun(childRunId)?.reason,
       'persistence_error',
     );
+    const terminalSnapshot = runtimeServices.childRuns.getChildRun(childRunId);
+    assert.ok(terminalSnapshot);
+    assert.equal('deliveryId' in terminalSnapshot, true);
+    if ('deliveryId' in terminalSnapshot) {
+      assert.equal(terminalSnapshot.deliveryId, attemptedDeliveryId);
+    }
     assert.equal(
       attemptedTerminalResult,
       'child stopped before terminal storage recovered',

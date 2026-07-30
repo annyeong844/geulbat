@@ -1,4 +1,4 @@
-import { getToolLibraryProjectionIdentity } from '../tools/tool-library-projection-manifest.js';
+import { getToolLibraryProjectionIdentity } from '@geulbat/tool-library/projection-manifest';
 import type { ToolLibraryProjectionIdentity } from '@geulbat/tool-library/projection-codec';
 import {
   createToolCapabilityPolicy,

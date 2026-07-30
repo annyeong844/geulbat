@@ -70,6 +70,21 @@ void test('install_packages requires the package install runtime service', async
   assert.equal(result.errorCode, 'execution_failed');
 });
 
+void test('install_packages requires an explicitly selected working folder', async () => {
+  const result = await installPackagesTool.execute(
+    { packages: [{ name: 'left-pad', version: '1.3.0' }] },
+    {
+      callId: 'call-install-packages-no-cwd',
+      stateRoot: '/workspace/home-state',
+      threadId: testThreadId(940_1),
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'execution_failed');
+  assert.match(result.error ?? '', /Select a working folder/u);
+});
+
 void test('install_packages delegates to the runtime and returns sanitized blatant-authority output', async () => {
   const daemonContext = createDaemonContext();
   let observedPackages: unknown;

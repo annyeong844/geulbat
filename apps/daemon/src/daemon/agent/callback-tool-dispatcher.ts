@@ -38,7 +38,9 @@ export function createCallbackToolDispatcher(args: {
   const base = runtime.executionContextBase;
   const runContext: RunContext = {
     stateRoot: base.stateRoot,
-    workingDirectory: base.workingDirectory,
+    ...(base.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: base.workingDirectory }),
     threadId: base.threadId,
   };
   const runId = base.runId;

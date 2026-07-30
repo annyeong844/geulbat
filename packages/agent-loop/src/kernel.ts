@@ -104,6 +104,14 @@ interface AgentLoopModelRoundValue<
   structuredOutputs?: readonly TStructuredOutput[];
 }
 
+type AgentLoopRecoveredModelRound<TResult> =
+  | { kind: 'continue' }
+  | {
+      kind: 'terminal';
+      result: TResult;
+      source: AgentLoopTerminalSource;
+    };
+
 type AgentLoopStructuredOutputResult<TResult> =
   | { ok: true; handled: false }
   | { ok: true; handled: true; result: TResult }
@@ -145,6 +153,18 @@ export interface AgentLoopKernelPorts<
       >
     >
   >;
+  resolveRecoveredModelRound?(args: {
+    context: AgentLoopRoundContext;
+    value: AgentLoopModelRoundValue<
+      TResult,
+      TFunctionCall,
+      TStructuredOutput,
+      THistoryItem
+    >;
+  }):
+    | AgentLoopRecoveredModelRound<TResult>
+    | undefined
+    | Promise<AgentLoopRecoveredModelRound<TResult> | undefined>;
   processStructuredOutputs(args: {
     context: AgentLoopRoundContext;
     structuredOutputs: readonly TStructuredOutput[];
@@ -175,7 +195,7 @@ export interface AgentLoopKernelPorts<
   settleTerminal(args: {
     result: TResult;
     source: AgentLoopTerminalSource;
-  }): void;
+  }): void | Promise<void>;
   checkpointEvent?(event: AgentLoopKernelEvent): Promise<void>;
   observe?(event: AgentLoopKernelEvent): void;
 }
@@ -313,6 +333,16 @@ export async function runAgentLoopKernel<
       functionCallCount: functionCalls.length,
       structuredOutputCount: structuredOutputs.length,
     });
+    const recoveredSettlement = await ports.resolveRecoveredModelRound?.({
+      context,
+      value: modelRound.value,
+    });
+    if (recoveredSettlement?.kind === 'terminal') {
+      return finish(recoveredSettlement.result, recoveredSettlement.source);
+    }
+    if (recoveredSettlement?.kind === 'continue') {
+      return { kind: 'continue' };
+    }
     if (itemsToAppend !== undefined) {
       ports.appendHistoryItems(itemsToAppend);
     }
@@ -438,7 +468,10 @@ export async function runAgentLoopKernel<
         : { kind: 'round_completed', round, outcome: 'continue' },
     );
     if (outcome.kind === 'terminal') {
-      ports.settleTerminal({ result: outcome.result, source: outcome.source });
+      await ports.settleTerminal({
+        result: outcome.result,
+        source: outcome.source,
+      });
       return outcome.result;
     }
     sawFirstModelRequest = true;

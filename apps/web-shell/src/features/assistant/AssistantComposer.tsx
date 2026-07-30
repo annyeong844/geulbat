@@ -103,7 +103,6 @@ interface AssistantComposerProps {
   contextUsage?: ContextUsageUpdatedEventPayload | null;
   goalSnapshot?: GoalSnapshot | null;
   workingDirectory?: string | null;
-  browseStartPath?: string;
   workingDirectorySelectionPending?: boolean;
   onOpenWorkingDirectoryPicker?: () => void;
   onUploadFiles?: ((files: FileList) => Promise<void>) | undefined;
@@ -155,7 +154,6 @@ export function AssistantComposer({
   contextUsage = null,
   goalSnapshot = null,
   workingDirectory = null,
-  browseStartPath = '',
   workingDirectorySelectionPending = false,
   onOpenWorkingDirectoryPicker,
   onUploadFiles,
@@ -327,9 +325,12 @@ export function AssistantComposer({
 
   const sendDisabled =
     isBusy || uploadPending || (!input.trim() && attachments.length === 0);
-  const selectedWorkingDirectory = workingDirectory ?? browseStartPath;
   const workingDirectoryLabel =
-    selectedWorkingDirectory === '' ? '컴퓨터 루트' : selectedWorkingDirectory;
+    workingDirectory === null
+      ? '작업 폴더 없음'
+      : workingDirectory === ''
+        ? '컴퓨터 루트'
+        : workingDirectory;
   const activeSlashOptionId =
     slashMenu.suggestions[slashMenu.activeIndex]?.id ?? null;
   const workingDirectorySelectionDisabled =

@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { sha256StableJson } from '@geulbat/content-identity/stable-json';
 import { assertRunId, type RunId, type ThreadId } from '@geulbat/protocol/ids';
-import type {
-  ApprovedPlanRef,
-  PlanDraftV1,
-  PlanModeDepth,
-  PlanModeIntensity,
-  PlanningWorkflowSnapshot,
-  PlanWorkflowCommand,
+import {
+  isSameApprovedPlanRef,
+  type ApprovedPlanRef,
+  type PlanDraftV1,
+  type PlanModeDepth,
+  type PlanModeIntensity,
+  type PlanningWorkflowSnapshot,
+  type PlanWorkflowCommand,
 } from '@geulbat/protocol/planning-workflow';
 import {
   PLAN_APPROVAL_REQUIRED,
@@ -119,21 +120,17 @@ export function createPlanningWorkflowStore(args: {
    * 디스크 표현과 발행·복구는 별도 소유자에게 있다. store는 그 위에서
    * 워크플로 상태 전이와 실행 수명만 판정한다.
    */
-  const {
-    publishApprovedDraft,
-    readRecoveredState,
-    readState,
-    recoverPendingPublish,
-    workflowPath,
-    writeState,
-  } = createPlanningWorkflowPersistence({ now, stateRoot: args.stateRoot });
+  const persistence = createPlanningWorkflowPersistence({
+    now,
+    stateRoot: args.stateRoot,
+  });
 
   async function readThread(
     threadId: ThreadId,
   ): Promise<PlanningWorkflowSnapshot | null> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      return (await readState(threadId)).current?.snapshot ?? null;
+      return (await persistence.readState(threadId)).current?.snapshot ?? null;
     });
   }
 
@@ -150,9 +147,9 @@ export function createPlanningWorkflowStore(args: {
     depth: PlanModeDepth | undefined;
     executionTemplate: PlanningExecutionTemplate;
   }): Promise<PlanningWorkflowSnapshot | null> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const previous = await readState(threadId);
+      const previous = await persistence.readState(threadId);
       const current = previous.current;
       if (
         current !== null &&
@@ -169,7 +166,7 @@ export function createPlanningWorkflowStore(args: {
           ...previous,
           current: { ...current, executionTemplate },
         };
-        await writeState(threadId, next);
+        await persistence.writeState(threadId, next);
         return next.current?.snapshot ?? null;
       }
       if (!requested) {
@@ -197,7 +194,7 @@ export function createPlanningWorkflowStore(args: {
         createdAt: timestamp,
         updatedAt: timestamp,
       };
-      await writeState(threadId, {
+      await persistence.writeState(threadId, {
         ...previous,
         current: { snapshot, executionTemplate },
       });
@@ -212,9 +209,9 @@ export function createPlanningWorkflowStore(args: {
     threadId: ThreadId;
     executionTemplate: PlanningExecutionTemplate;
   }): Promise<PlanningWorkflowSnapshot> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const state = await readState(threadId);
+      const state = await persistence.readState(threadId);
       const current = state.current;
       if (
         current === null ||
@@ -232,7 +229,7 @@ export function createPlanningWorkflowStore(args: {
         ...state,
         current: { ...current, executionTemplate },
       };
-      await writeState(threadId, next);
+      await persistence.writeState(threadId, next);
       return current.snapshot;
     });
   }
@@ -248,9 +245,9 @@ export function createPlanningWorkflowStore(args: {
   }): Promise<
     Extract<PlanningWorkflowSnapshot, { state: 'awaiting_approval' }>
   > {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const state = await readState(threadId);
+      const state = await persistence.readState(threadId);
       const current = state.current;
       const assertedProposalRunId = assertRunId(proposalRunId);
       const draftDigest = sha256StableJson(draft);
@@ -281,6 +278,9 @@ export function createPlanningWorkflowStore(args: {
         threadId,
         intensity: current.snapshot.intensity,
         depth: current.snapshot.depth,
+        ...(current.snapshot.supersededPlan === undefined
+          ? {}
+          : { supersededPlan: current.snapshot.supersededPlan }),
         planId,
         revision,
         digest,
@@ -289,7 +289,7 @@ export function createPlanningWorkflowStore(args: {
         createdAt: current.snapshot.createdAt,
         updatedAt: timestamp,
       };
-      await writeState(threadId, {
+      await persistence.writeState(threadId, {
         ...state,
         current: { ...current, snapshot },
       });
@@ -303,9 +303,9 @@ export function createPlanningWorkflowStore(args: {
     executionTemplate?: PlanningExecutionTemplate;
   }> {
     const threadId = command.threadId;
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const state = await readState(threadId);
+      const state = await persistence.readState(threadId);
       const current = state.current;
       if (command.kind === 'cancel') {
         if (
@@ -321,7 +321,7 @@ export function createPlanningWorkflowStore(args: {
         ) {
           throw planningConflict('execution workflow cannot be cancelled');
         }
-        await writeState(threadId, { ...state, current: null });
+        await persistence.writeState(threadId, { ...state, current: null });
         return { snapshot: null };
       }
 
@@ -332,7 +332,7 @@ export function createPlanningWorkflowStore(args: {
           (current.snapshot.state === 'approved' ||
             current.snapshot.state === 'executing' ||
             current.snapshot.state === 'completed') &&
-          refsEqual(current.snapshot, approvedRef)
+          isSameApprovedPlanRef(current.snapshot, approvedRef)
         ) {
           return {
             snapshot: current.snapshot,
@@ -341,7 +341,7 @@ export function createPlanningWorkflowStore(args: {
         }
         if (
           current?.snapshot.state !== 'execution_failed' ||
-          !refsEqual(current.snapshot, approvedRef)
+          !isSameApprovedPlanRef(current.snapshot, approvedRef)
         ) {
           throw planningConflict(
             'only the current failed plan execution can be retried',
@@ -353,6 +353,9 @@ export function createPlanningWorkflowStore(args: {
           threadId,
           intensity: current.snapshot.intensity,
           depth: current.snapshot.depth,
+          ...(current.snapshot.supersededPlan === undefined
+            ? {}
+            : { supersededPlan: current.snapshot.supersededPlan }),
           planId: current.snapshot.planId,
           revision: current.snapshot.revision,
           digest: current.snapshot.digest,
@@ -361,7 +364,7 @@ export function createPlanningWorkflowStore(args: {
           createdAt: current.snapshot.createdAt,
           updatedAt: now(),
         };
-        await writeState(threadId, {
+        await persistence.writeState(threadId, {
           ...state,
           current: { ...current, snapshot },
         });
@@ -373,14 +376,17 @@ export function createPlanningWorkflowStore(args: {
       }
       if (command.kind === 'approve') {
         const idempotent = state.approvals.find((approval) =>
-          refsEqual(approval.record, approvedRef),
+          isSameApprovedPlanRef(approval.record, approvedRef),
         );
         if (
           idempotent !== undefined &&
           current?.snapshot.state === 'approved_pending_publish' &&
-          refsEqual(current.snapshot, approvedRef)
+          isSameApprovedPlanRef(current.snapshot, approvedRef)
         ) {
-          const recovered = await recoverPendingPublish(threadId, state);
+          const recovered = await persistence.recoverPendingPublish(
+            threadId,
+            state,
+          );
           return {
             snapshot: recovered.current?.snapshot ?? null,
             approvedPlanRef: approvedRef,
@@ -403,7 +409,7 @@ export function createPlanningWorkflowStore(args: {
       }
       if (
         current?.snapshot.state !== 'awaiting_approval' ||
-        !refsEqual(current.snapshot, approvedRef)
+        !isSameApprovedPlanRef(current.snapshot, approvedRef)
       ) {
         throw planningConflict('plan revision or digest is no longer current');
       }
@@ -416,6 +422,13 @@ export function createPlanningWorkflowStore(args: {
           threadId,
           intensity: current.snapshot.intensity,
           depth: current.snapshot.depth,
+          supersededPlan: {
+            workflowId: current.snapshot.workflowId,
+            planId: current.snapshot.planId,
+            revision: current.snapshot.revision,
+            digest: current.snapshot.digest,
+            draft: current.snapshot.draft,
+          },
           planId: current.snapshot.planId,
           revision: current.snapshot.revision,
           ...(command.feedback === undefined
@@ -424,7 +437,7 @@ export function createPlanningWorkflowStore(args: {
           createdAt: current.snapshot.createdAt,
           updatedAt: timestamp,
         };
-        await writeState(threadId, {
+        await persistence.writeState(threadId, {
           ...state,
           current: { ...current, snapshot },
         });
@@ -463,18 +476,18 @@ export function createPlanningWorkflowStore(args: {
         current: { ...current, snapshot: pendingSnapshot },
         approvals: [...state.approvals, approval],
       };
-      await writeState(threadId, pendingState);
+      await persistence.writeState(threadId, pendingState);
       const pendingCurrent = pendingState.current;
       if (pendingCurrent === null) {
         throw new Error('approved plan publication state is missing');
       }
-      await publishApprovedDraft(threadId, pendingCurrent);
+      await persistence.publishApprovedDraft(threadId, pendingCurrent);
       const approvedSnapshot: PlanningWorkflowSnapshot = {
         ...pendingSnapshot,
         state: 'approved',
         updatedAt: now(),
       };
-      await writeState(threadId, {
+      await persistence.writeState(threadId, {
         ...pendingState,
         current: { ...pendingCurrent, snapshot: approvedSnapshot },
       });
@@ -498,13 +511,13 @@ export function createPlanningWorkflowStore(args: {
     snapshot: PlanningWorkflowSnapshot;
     draft: PlanDraftV1;
   }> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const state = await readState(threadId);
+      const state = await persistence.readState(threadId);
       const current = state.current;
       if (current?.snapshot.state === 'executing') {
         if (
-          refsEqual(current.snapshot, ref) &&
+          isSameApprovedPlanRef(current.snapshot, ref) &&
           current.snapshot.executionRunId === executionRunId
         ) {
           await bindPlanExecution(threadId, ref, executionRunId);
@@ -514,7 +527,7 @@ export function createPlanningWorkflowStore(args: {
       }
       if (
         current?.snapshot.state !== 'approved' ||
-        !refsEqual(current.snapshot, ref)
+        !isSameApprovedPlanRef(current.snapshot, ref)
       ) {
         throw planningConflict('approved plan reference is not executable');
       }
@@ -526,7 +539,7 @@ export function createPlanningWorkflowStore(args: {
         updatedAt: timestamp,
       };
       const approvals = state.approvals.map((approval) =>
-        refsEqual(approval.record, ref)
+        isSameApprovedPlanRef(approval.record, ref)
           ? {
               ...approval,
               record: {
@@ -536,7 +549,7 @@ export function createPlanningWorkflowStore(args: {
             }
           : approval,
       );
-      await writeState(threadId, {
+      await persistence.writeState(threadId, {
         ...state,
         current: { ...current, snapshot },
         approvals,
@@ -554,7 +567,7 @@ export function createPlanningWorkflowStore(args: {
     const plan = await loadPlanState(args.stateRoot, threadId);
     if (
       plan.execution === undefined ||
-      !refsEqual(plan.execution.approvedPlanRef, ref)
+      !isSameApprovedPlanRef(plan.execution.approvedPlanRef, ref)
     ) {
       throw planningConflict(
         'published plan progress does not match the approved plan',
@@ -584,16 +597,16 @@ export function createPlanningWorkflowStore(args: {
     >;
     draft: PlanDraftV1;
   }> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const current = (await readState(threadId)).current;
+      const current = (await persistence.readState(threadId)).current;
       if (
         current === null ||
         (current.snapshot.state !== 'approved' &&
           current.snapshot.state !== 'executing' &&
           current.snapshot.state !== 'completed' &&
           current.snapshot.state !== 'execution_failed') ||
-        !refsEqual(current.snapshot, ref)
+        !isSameApprovedPlanRef(current.snapshot, ref)
       ) {
         throw planningConflict('approved plan reference is not current');
       }
@@ -613,12 +626,12 @@ export function createPlanningWorkflowStore(args: {
     threadId: ThreadId;
     executionRunId: RunId;
   }): Promise<PlanExecutionCompletionAssessment> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const current = (await readState(threadId)).current;
+      const current = (await persistence.readState(threadId)).current;
       if (
         current?.snapshot.state !== 'executing' ||
-        !refsEqual(current.snapshot, ref) ||
+        !isSameApprovedPlanRef(current.snapshot, ref) ||
         current.snapshot.executionRunId !== executionRunId
       ) {
         throw planningConflict('plan execution identity does not match');
@@ -628,7 +641,7 @@ export function createPlanningWorkflowStore(args: {
       if (
         plan.execution === undefined ||
         plan.execution.executionRunId !== executionRunId ||
-        !refsEqual(plan.execution.approvedPlanRef, ref)
+        !isSameApprovedPlanRef(plan.execution.approvedPlanRef, ref)
       ) {
         throw planningConflict(
           'plan progress is not bound to this execution run',
@@ -669,16 +682,16 @@ export function createPlanningWorkflowStore(args: {
     executionRunId: RunId;
     ok: boolean;
   }): Promise<PlanningWorkflowSnapshot> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const state = await readState(threadId);
+      const state = await persistence.readState(threadId);
       const current = state.current;
       if (
         current === null ||
         (current.snapshot.state !== 'executing' &&
           current.snapshot.state !== 'completed' &&
           current.snapshot.state !== 'execution_failed') ||
-        !refsEqual(current.snapshot, ref) ||
+        !isSameApprovedPlanRef(current.snapshot, ref) ||
         current.snapshot.executionRunId !== executionRunId
       ) {
         throw planningConflict('plan execution identity does not match');
@@ -700,7 +713,7 @@ export function createPlanningWorkflowStore(args: {
         state: ok ? 'completed' : 'execution_failed',
         updatedAt: now(),
       };
-      await writeState(threadId, {
+      await persistence.writeState(threadId, {
         ...state,
         current: { ...current, snapshot },
       });
@@ -712,9 +725,9 @@ export function createPlanningWorkflowStore(args: {
     ref: ApprovedPlanRef;
     executionTemplate: PlanningExecutionTemplate;
   } | null> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     return await runMutationSerial(path, async () => {
-      const state = await readRecoveredState(threadId);
+      const state = await persistence.readRecoveredState(threadId);
       const current = state.current;
       if (current?.snapshot.state !== 'approved') {
         return null;
@@ -734,9 +747,9 @@ export function createPlanningWorkflowStore(args: {
       status: 'pending' | 'in_progress' | 'completed';
     }[],
   ): Promise<void> {
-    const path = workflowPath(threadId);
+    const path = persistence.workflowPath(threadId);
     await runMutationSerial(path, async () => {
-      const current = (await readState(threadId)).current?.snapshot;
+      const current = (await persistence.readState(threadId)).current?.snapshot;
       if (current === undefined) {
         return;
       }
@@ -801,15 +814,6 @@ function commandRef(
     revision: command.revision,
     digest: command.digest,
   };
-}
-
-function refsEqual(left: ApprovedPlanRef, right: ApprovedPlanRef): boolean {
-  return (
-    left.workflowId === right.workflowId &&
-    left.planId === right.planId &&
-    left.revision === right.revision &&
-    left.digest === right.digest
-  );
 }
 
 function planningConflict(message: string): Error {

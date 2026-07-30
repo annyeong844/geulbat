@@ -842,7 +842,8 @@ async function startPromotedCellProcess(args: {
       ...(args.bridge?.replaceCallbackHandler === undefined
         ? {}
         : {
-            replaceCallbackHandler: args.bridge.replaceCallbackHandler,
+            replaceCallbackHandler: (handler) =>
+              args.bridge?.replaceCallbackHandler?.(handler),
           }),
       closeBridge: async () => {
         const closed = await runtimeArgs.closeCallbackBridge(args.bridge);

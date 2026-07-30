@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { sha256StableJson } from '@geulbat/content-identity/stable-json';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadId } from '@geulbat/protocol/ids';
 import type { JsonValue } from '@geulbat/protocol/runtime-persistence';
@@ -77,29 +78,7 @@ export function parseMediaGenerationRecoveryIdentity(
 }
 
 function digestMediaGenerationToolArgs(value: JsonValue): string {
-  return createHash('sha256')
-    .update(canonicalMediaGenerationToolArgs(value))
-    .digest('hex');
-}
-
-function canonicalMediaGenerationToolArgs(value: JsonValue): string {
-  if (Array.isArray(value)) {
-    return `[${value
-      .map((item) => canonicalMediaGenerationToolArgs(item))
-      .join(',')}]`;
-  }
-  if (value !== null && typeof value === 'object') {
-    return `{${Object.keys(value)
-      .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${canonicalMediaGenerationToolArgs(
-            value[key] as JsonValue,
-          )}`,
-      )
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
+  return sha256StableJson(value);
 }
 
 export const IMAGE_GENERATION_PROVIDER_IDS = [

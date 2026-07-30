@@ -14,11 +14,13 @@ class FakeRunChannelSocket {
   constructor({
     declarationPath,
     approval = false,
+    socketLocalChildStatus = false,
     socketError = false,
     socketErrorAfterAck = false,
   }) {
     this.declarationPath = declarationPath;
     this.approval = approval;
+    this.socketLocalChildStatus = socketLocalChildStatus;
     this.socketError = socketError;
     this.socketErrorAfterAck = socketErrorAfterAck;
     this.listeners = new Map();
@@ -107,6 +109,56 @@ class FakeRunChannelSocket {
           cachedInputTokens: 100,
           outputTokens: 8,
         });
+        if (this.socketLocalChildStatus) {
+          const childRunId = 'run-autonomy-probe-child';
+          this.reply({
+            type: 'run.event',
+            runEventCursor: false,
+            event: {
+              runId: RUN_ID,
+              threadId: this.threadId,
+              seq: 0,
+              type: 'subagent_status',
+              ts: '2026-07-28T01:00:01.500Z',
+              payload: {
+                parentRunId: RUN_ID,
+                childRunId,
+                childThreadId: '3fba1cf0-684e-4e77-846d-b4a6fca9b722',
+                subagentType: 'explorer',
+                capabilities: [],
+                toolSurface: 'explorer',
+                runtime: {
+                  phase: 'provider_waiting',
+                  observedAt: '2026-07-28T01:00:01.500Z',
+                  partialOutputAvailable: false,
+                },
+              },
+            },
+          });
+          this.reply({
+            type: 'run.event',
+            runEventCursor: false,
+            event: {
+              runId: childRunId,
+              threadId: this.threadId,
+              seq: 1,
+              type: 'subagent_terminal',
+              ts: '2026-07-28T01:00:01.750Z',
+              payload: {
+                deliveryId: 'delivery-autonomy-probe-child',
+                parentRunId: RUN_ID,
+                childRunId,
+                subagentType: 'explorer',
+                capabilities: [],
+                toolSurface: 'explorer',
+                terminalState: 'completed',
+                ok: true,
+                result: EXPECTED_ANSWER,
+                completedAt: '2026-07-28T01:00:01.750Z',
+              },
+            },
+          });
+        }
         this.event(2, 'done', { answer: EXPECTED_ANSWER, ok: true });
       }
     } else if (message.type === 'run.cancel') {
@@ -178,6 +230,7 @@ async function runProbe(t, options = {}) {
         socket = new FakeRunChannelSocket({
           approval: options.approval,
           declarationPath: join(repoRoot, output, 'declaration.json'),
+          socketLocalChildStatus: options.socketLocalChildStatus,
           socketError: options.socketError,
           socketErrorAfterAck: options.socketErrorAfterAck,
         });
@@ -218,6 +271,14 @@ void test('records a content-redacted exact-answer run-channel proof', async (t)
   assert.equal(persisted.includes('Read the root package.json'), false);
   assert.equal(persisted.includes(EXPECTED_ANSWER), false);
   assert.equal(persisted.includes('content must not persist'), false);
+});
+
+void test('keeps the durable cursor monotonic across socket-local child activity', async (t) => {
+  const { result } = await runProbe(t, { socketLocalChildStatus: true });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.receipt.lastEventSeq, 2);
+  assert.equal(result.receipt.terminalOutcome, 'completed');
 });
 
 void test('cancels and fails closed on unexpected approval', async (t) => {

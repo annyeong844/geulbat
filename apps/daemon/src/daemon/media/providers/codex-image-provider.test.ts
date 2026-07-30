@@ -57,16 +57,22 @@ void test('buildCodexImageRequestPayload shapes a hosted image_generation respon
 });
 
 void test('generateImageViaCodexResponses extracts image_generation_call from backend items', async () => {
+  let preparedRequestDigest: string | undefined;
   const candidate = await generateImageViaCodexResponses({
     request: { prompt: '고양이' },
     auth: { accessToken: 'codex-access-token', accountId: 'acct-1' },
     providerSessionId: 'image-generation:thread-1',
     providerWebSocketSessions: fakeSessionStore,
+    requestAttempt: 1,
+    onDurableRequestPrepared: async (requestDigest) => {
+      preparedRequestDigest = requestDigest;
+    },
     now: () => '2026-07-05T00:00:00.000Z',
     streamResponses: (async (input) => {
       const headers = input.headers;
       assert.equal(headers.get('authorization'), 'Bearer codex-access-token');
       assert.equal(headers.get('chatgpt-account-id'), 'acct-1');
+      assert.equal(input.requestAttempt, 1);
       assert.ok(input.payload);
       assert.deepEqual(
         input.webSocketReusePolicy,
@@ -89,6 +95,7 @@ void test('generateImageViaCodexResponses extracts image_generation_call from ba
   assert.equal(candidate.asset.mimeType, 'image/png');
   assert.equal(candidate.provenance.providerId, 'openai_codex_direct');
   assert.equal(candidate.provenance.revisedPrompt, 'a cat, refined');
+  assert.match(preparedRequestDigest ?? '', /^[a-f0-9]{64}$/u);
 });
 
 void test('generateImageViaCodexResponses fails as provider_api when no image item arrives', async () => {

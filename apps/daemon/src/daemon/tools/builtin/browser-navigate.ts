@@ -81,7 +81,9 @@ export const browserNavigateTool = defineZodTool({
       runContext: createRunContext({
         threadId: ctx.threadId,
         stateRoot: ctx.stateRoot,
-        workingDirectory: ctx.workingDirectory ?? '',
+        ...(ctx.workingDirectory === undefined
+          ? {}
+          : { workingDirectory: ctx.workingDirectory }),
       }),
       request: {
         url: args.url,

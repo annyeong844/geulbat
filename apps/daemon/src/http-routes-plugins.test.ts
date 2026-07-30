@@ -180,7 +180,7 @@ void test('authenticated plugin routes install, list, toggle, and remove a manag
 void test('marketplace routes add a Git catalog, install exact listed bytes, and preserve the installed copy after source removal', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const homeStateRoot = getHomeStateRootFromContext(daemonContext);
-  daemonContext.pluginMarketplaces = createRouteTestPluginMarketplaceStore(
+  const marketplaceStore = createRouteTestPluginMarketplaceStore(
     daemonContext,
     {
       acquireGitRepository: async ({ repositoryRoot }) => {
@@ -188,9 +188,22 @@ void test('marketplace routes add a Git catalog, install exact listed bytes, and
       },
     },
   );
+  let initializeCalls = 0;
+  daemonContext.pluginMarketplaces = {
+    ...marketplaceStore,
+    async initialize() {
+      initializeCalls += 1;
+      await marketplaceStore.initialize();
+    },
+  };
 
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
+      assert.equal(
+        initializeCalls,
+        0,
+        'core daemon boot must not inspect marketplace catalogs',
+      );
       const addResponse = await fetch(
         `http://127.0.0.1:${port}/api/plugins/marketplaces`,
         {
@@ -204,6 +217,7 @@ void test('marketplace routes add a Git catalog, install exact listed bytes, and
         },
       );
       assert.equal(addResponse.status, 201);
+      assert.equal(initializeCalls, 1);
       const added: unknown = await addResponse.json();
       assert.equal(isPluginMarketplaceMutationResponse(added), true);
       if (!isPluginMarketplaceMutationResponse(added)) {

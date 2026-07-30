@@ -132,8 +132,18 @@ function readFlowGateFixtureConfig() {
     workingDirectory: readRequiredEnv('GEULBAT_FLOW_GATE_WORKING_DIRECTORY'),
     initialCommentary: readRequiredEnv('GEULBAT_FLOW_GATE_INITIAL_COMMENTARY'),
     threadTitle: readRequiredEnv('GEULBAT_FLOW_GATE_THREAD_TITLE'),
+    planSteerFinalText: readRequiredEnv(
+      'GEULBAT_FLOW_GATE_PLAN_STEER_FINAL_TEXT',
+    ),
+    planSteerFollowupFinalText: readRequiredEnv(
+      'GEULBAT_FLOW_GATE_PLAN_STEER_FOLLOWUP_FINAL_TEXT',
+    ),
+    planSteerFollowupPrompt: readRequiredEnv(
+      'GEULBAT_FLOW_GATE_PLAN_STEER_FOLLOWUP_PROMPT',
+    ),
     planSteerPrompt: readRequiredEnv('GEULBAT_FLOW_GATE_PLAN_STEER_PROMPT'),
     planSteerStep: readRequiredEnv('GEULBAT_FLOW_GATE_PLAN_STEER_STEP'),
+    planSteerText: readRequiredEnv('GEULBAT_FLOW_GATE_PLAN_STEER_TEXT'),
     runStreamPrefix: readRequiredEnv('GEULBAT_FLOW_GATE_RUN_STREAM_PREFIX'),
     runFinalSuffix: readRequiredEnv('GEULBAT_FLOW_GATE_RUN_FINAL_SUFFIX'),
     runSettlementPrompt: readRequiredEnv(

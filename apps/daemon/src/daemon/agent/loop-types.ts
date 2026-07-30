@@ -32,6 +32,7 @@ import type {
 import type { RunContext } from '../run-context.js';
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
 import type { RunExecutionAgentBindings } from '../sessions/run-execution-lifecycle.js';
+import type { RunCheckpointModelRoundState } from '../sessions/run-checkpoint-store.js';
 import type { ResolvedRunAttachment } from './run-attachments.js';
 
 export interface LineSelection {
@@ -78,6 +79,10 @@ export interface AgentInput extends RunExecutionAgentBindings {
   toolSurface?: AgentToolSurface;
   toolCapabilityPolicy?: ToolCapabilityPolicy;
   toolLibraryProjectionIdentity?: ToolLibraryProjectionIdentity;
+  modelRoundRecovery?: {
+    claimId: string;
+    state: RunCheckpointModelRoundState;
+  };
   promptProfile?: AgentLoopPromptProfile;
   loopImplementation?: AgentLoopImplementation;
   // Runtime services flow through one narrow path so agent/tool layers do not

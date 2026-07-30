@@ -83,6 +83,18 @@ interface RunApproveMessage {
   request: ApprovalRequest;
 }
 
+export interface RunProviderRequestRecoveryRequest {
+  threadId: ThreadId;
+  // `true` 리터럴은 단순 확인 버튼과 구분되는 명시적 위험 인지 증거다.
+  acknowledgePossibleDuplicateProviderWork: true;
+}
+
+interface RunProviderRequestRecoveryMessage {
+  type: 'run.provider_request.recover';
+  requestId: string;
+  request: RunProviderRequestRecoveryRequest;
+}
+
 interface PlanWorkflowCommandMessage {
   type: 'plan.command';
   requestId: string;
@@ -173,6 +185,7 @@ export type RunChannelClientMessage =
   | RunChildCancelMessage
   | RunThreadSubscribeMessage
   | RunApproveMessage
+  | RunProviderRequestRecoveryMessage
   | PlanWorkflowCommandMessage
   | GoalCommandMessage
   | RunInterjectEnvelopeMessage
@@ -191,6 +204,12 @@ interface RunAuthOkMessage {
 interface RunEventMessage {
   type: 'run.event';
   event: RunEvent;
+  /**
+   * Socket-local child activity uses a thread-scoped display sequence rather
+   * than the durable run journal sequence. Such messages must not advance a
+   * reconnect cursor.
+   */
+  runEventCursor?: false;
 }
 
 export interface PlanningWorkflowMessage {
@@ -231,6 +250,19 @@ interface RunApproveControlMessage {
   requestId: string;
   action: 'run.approve';
   ok: true;
+}
+
+export type RunProviderRequestRecoveryDisposition =
+  | 'terminal_available'
+  | 'owner_active'
+  | 'abandoned';
+
+interface RunProviderRequestRecoveryControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'run.provider_request.recover';
+  ok: true;
+  disposition: RunProviderRequestRecoveryDisposition;
 }
 
 interface PlanWorkflowCommandControlMessage {
@@ -299,6 +331,7 @@ export type RunControlMessage =
   | RunCancelControlMessage
   | RunChildCancelControlMessage
   | RunApproveControlMessage
+  | RunProviderRequestRecoveryControlMessage
   | PlanWorkflowCommandControlMessage
   | GoalCommandControlMessage
   | RunInterjectControlMessage
@@ -409,6 +442,25 @@ export function isRunApproveMessage(
     value.type === 'run.approve' &&
     isString(value.requestId) &&
     isApprovalRequest(value.request)
+  );
+}
+
+export function isRunProviderRequestRecoveryMessage(
+  value: unknown,
+): value is RunProviderRequestRecoveryMessage {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['type', 'requestId', 'request']) &&
+    value.type === 'run.provider_request.recover' &&
+    isString(value.requestId) &&
+    isRecord(value.request) &&
+    hasOnlyKeys(value.request, [
+      'threadId',
+      'acknowledgePossibleDuplicateProviderWork',
+    ]) &&
+    isString(value.request.threadId) &&
+    isThreadId(value.request.threadId) &&
+    value.request.acknowledgePossibleDuplicateProviderWork === true
   );
 }
 
@@ -557,6 +609,14 @@ const RUN_CONTROL_FIELD_GUARDS = {
   'run.cancel': {},
   'run.child.cancel': {},
   'run.approve': {},
+  'run.provider_request.recover': {
+    disposition: (
+      value: unknown,
+    ): value is RunProviderRequestRecoveryDisposition =>
+      value === 'terminal_available' ||
+      value === 'owner_active' ||
+      value === 'abandoned',
+  },
   'plan.command': {
     commandKind: (value: unknown): value is PlanWorkflowCommand['kind'] =>
       value === 'approve' ||
@@ -629,7 +689,11 @@ export function isRunChannelServerMessage(
         value.computerSessionId.trim().length > 0
       );
     case 'run.event':
-      return isRunEvent(value.event);
+      return (
+        (value.runEventCursor === undefined ||
+          value.runEventCursor === false) &&
+        isRunEvent(value.event)
+      );
     case 'plan.workflow':
       return (
         isString(value.threadId) &&

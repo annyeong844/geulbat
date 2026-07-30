@@ -1,5 +1,9 @@
+import { Buffer } from 'node:buffer';
+import { performance } from 'node:perf_hooks';
+
 import { GROK_OAUTH_RESPONSES_BASE_URL } from '../../llm/provider/grok-oauth-transport.js';
 import { isRecord } from '../../runtime-json.js';
+import type { PublicHttpReadRuntime } from '../../utils/public-http-read-port.js';
 import { ImageGenerationError } from '../contract.js';
 
 // xAI 동영상 생성 API 어댑터(video-generation-open §4.5) — 비동기 잡:
@@ -105,8 +109,9 @@ interface GrokVideoProviderInput {
   auth: { accessToken: string };
   signal?: AbortSignal;
   createRequestImpl?: GrokVideoCreateRequest;
-  fetchImpl?: typeof fetch;
+  publicHttpRead?: PublicHttpReadRuntime;
   sleepImpl?: (ms: number) => Promise<void>;
+  now?: () => number;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
 }
@@ -123,37 +128,60 @@ function defaultSleep(ms: number): Promise<void> {
   });
 }
 
-async function fetchJsonOrThrow(
-  fetchImpl: typeof fetch,
+async function readPollJsonOrThrow(
+  publicHttpRead: PublicHttpReadRuntime | undefined,
   url: string,
-  init: RequestInit,
-  phase: 'create' | 'poll',
+  authorization: string,
+  signal: AbortSignal | undefined,
 ): Promise<unknown> {
-  let response: Response;
+  if (publicHttpRead === undefined) {
+    throw new ImageGenerationError({
+      surface: 'provider_api',
+      reasonCode: 'provider_network_failed',
+      message: 'xAI video polling public HTTP owner is unavailable',
+    });
+  }
+  let response: Awaited<ReturnType<PublicHttpReadRuntime['request']>>;
   try {
-    response = await fetchImpl(url, init);
+    response = await publicHttpRead.request({
+      url,
+      method: 'GET',
+      headers: { Authorization: authorization },
+      responseBodyMode: 'full',
+      ...(signal === undefined ? {} : { signal }),
+    });
   } catch (error: unknown) {
-    if (init.signal?.aborted === true) {
+    if (signal?.aborted === true) {
       throw error;
     }
     throw new ImageGenerationError({
       surface: 'provider_api',
       reasonCode: 'provider_network_failed',
-      message: `xAI video generation ${phase} request failed before a response arrived`,
+      message:
+        'xAI video generation poll request failed before a response arrived',
       cause: error,
     });
   }
   if (!response.ok) {
-    await response.text().catch(() => '');
+    if (signal?.aborted === true || response.reasonCode === 'aborted') {
+      throw new Error('video generation was aborted');
+    }
+    throw new ImageGenerationError({
+      surface: 'provider_api',
+      reasonCode: 'provider_network_failed',
+      message: `xAI video generation poll owner failed (${response.reasonCode})`,
+    });
+  }
+  if (response.status < 200 || response.status >= 300) {
     throw classifyGrokVideoFailure(response.status);
   }
   try {
-    return await response.json();
+    return JSON.parse(Buffer.from(response.bodyBase64, 'base64').toString());
   } catch (error: unknown) {
     throw new ImageGenerationError({
       surface: 'provider_api',
       reasonCode: 'provider_response_invalid',
-      message: `xAI video generation ${phase} returned a non-JSON response`,
+      message: 'xAI video generation poll returned a non-JSON response',
       cause: error,
     });
   }
@@ -161,23 +189,16 @@ async function fetchJsonOrThrow(
 
 async function createGrokVideoRequest(
   input: GrokVideoProviderInput,
-  fetchImpl: typeof fetch,
   requestUrl: string,
   headers: Headers,
   serializedPayload: string,
 ): Promise<unknown> {
   if (input.createRequestImpl === undefined) {
-    return fetchJsonOrThrow(
-      fetchImpl,
-      requestUrl,
-      {
-        method: 'POST',
-        headers,
-        body: serializedPayload,
-        ...(input.signal !== undefined ? { signal: input.signal } : {}),
-      },
-      'create',
-    );
+    throw new ImageGenerationError({
+      surface: 'recovery',
+      reasonCode: 'provider_outcome_unknown',
+      message: 'xAI video generation create owner is unavailable',
+    });
   }
   try {
     return await input.createRequestImpl({
@@ -195,7 +216,7 @@ async function createGrokVideoRequest(
     }
     const status =
       error !== null && typeof error === 'object'
-        ? Reflect.get(error, 'status')
+        ? (error as Record<PropertyKey, unknown>)['status']
         : undefined;
     if (typeof status === 'number' && Number.isFinite(status)) {
       if (status >= 400) {
@@ -223,8 +244,8 @@ export async function generateVideoViaGrok(
   input: GrokVideoProviderInput,
 ): Promise<GrokGeneratedVideo> {
   const model = resolveGrokVideoModel(input.request.model);
-  const fetchImpl = input.fetchImpl ?? fetch;
   const sleep = input.sleepImpl ?? defaultSleep;
+  const now = input.now ?? (() => performance.now());
   const pollIntervalMs =
     input.pollIntervalMs ?? resolveGrokVideoPollIntervalMs();
   const pollTimeoutMs = input.pollTimeoutMs ?? resolveGrokVideoPollTimeoutMs();
@@ -252,7 +273,6 @@ export async function generateVideoViaGrok(
     });
     const created = await createGrokVideoRequest(
       input,
-      fetchImpl,
       resolveGrokVideoGenerationsUrl(),
       headers,
       serializedPayload,
@@ -278,20 +298,27 @@ export async function generateVideoViaGrok(
   }
 
   // 폴링 — 취소(AbortSignal)는 즉시 전파, 상한 초과는 timeout 분류(§4.4)
-  const deadline = Date.now() + pollTimeoutMs;
-  while (Date.now() < deadline) {
-    if (input.signal?.aborted === true) {
+  const deadline = now() + pollTimeoutMs;
+  while (true) {
+    if (input.signal?.aborted) {
       throw new Error('video generation was aborted');
     }
-    await sleep(pollIntervalMs);
-    const body = await fetchJsonOrThrow(
-      fetchImpl,
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(pollIntervalMs, remainingMs));
+    if (input.signal?.aborted) {
+      throw new Error('video generation was aborted');
+    }
+    if (now() >= deadline) {
+      break;
+    }
+    const body = await readPollJsonOrThrow(
+      input.publicHttpRead,
       resolveGrokVideoStatusUrl(requestId),
-      {
-        headers: { Authorization: headers.get('Authorization') ?? '' },
-        ...(input.signal !== undefined ? { signal: input.signal } : {}),
-      },
-      'poll',
+      headers.get('Authorization') ?? '',
+      input.signal,
     );
     const status = isRecord(body) ? body.status : undefined;
     if (status === 'pending' || status === undefined) {

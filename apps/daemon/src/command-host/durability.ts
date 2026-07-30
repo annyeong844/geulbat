@@ -187,12 +187,32 @@ export function readPageFromWindow(args: {
   stream: HostCommandOutputStream;
   offsetBytes: number;
   limitBytes: number;
+  encoding?: 'base64';
 }): HostCommandOutputPage {
   const { window, stream, limitBytes } = args;
   const clamped = Math.min(
     Math.max(args.offsetBytes, window.baseOffset),
     window.totalBytes,
   );
+  if (args.encoding === 'base64') {
+    const sliceStart = clamped - window.baseOffset;
+    const requested = Math.min(limitBytes, window.buffer.length - sliceStart);
+    const raw = window.buffer.subarray(sliceStart, sliceStart + requested);
+    const endOffsetBytes = clamped + raw.length;
+    const hasMore = endOffsetBytes < window.totalBytes;
+    return {
+      stream,
+      offsetBytes: clamped,
+      endOffsetBytes,
+      totalBytes: window.totalBytes,
+      limitBytes,
+      hasMore,
+      nextOffsetBytes: hasMore ? endOffsetBytes : null,
+      content: raw.toString('base64'),
+      contentEncoding: 'base64',
+      earliestAvailableOffset: window.baseOffset,
+    };
+  }
   let contentStart = clamped;
   while (
     contentStart < window.totalBytes &&

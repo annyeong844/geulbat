@@ -3,7 +3,7 @@ import {
   type CallModelInput,
   type LLMChunk,
 } from '../llm/provider/client.js';
-import { resolveProviderReplayScopeForRun } from '../llm/provider/provider-replay-scope.js';
+import { resolveProviderReplayScopeForRun } from '../llm/provider/provider-replay-scope-resolution.js';
 import {
   resolveProviderRequestOptionsForRun,
   type ProviderRequestOptions,

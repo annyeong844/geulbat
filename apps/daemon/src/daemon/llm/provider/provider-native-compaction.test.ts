@@ -41,6 +41,11 @@ function createOpenAiNativeCompactionInput(
       },
     ],
     providerSessionId: 'provider-session',
+    providerWebSocketSessions: {
+      acquireWebSocket: () => {
+        throw new Error('not used');
+      },
+    },
     providerAuthRuntime: createProviderAuthRuntimeStore(),
     providerRequestOptions: {
       ...defaultProviderRequestOptions,
@@ -192,8 +197,9 @@ void test('compactOpenAiHistory retries OAuth once and preserves the opaque repl
           accountId: 'account',
         };
       },
+      fetchImpl: globalThis.fetch,
       responsesUrl: 'https://chatgpt.test/backend-api/codex/responses',
-      fetchImpl: async (request, init) => {
+      compactionFetchImpl: async (request, init) => {
         requestCalls += 1;
         assert.equal(
           String(request),
@@ -308,7 +314,8 @@ void test('compactOpenAiHistory accepts the live OAuth compaction_summary window
         accessToken: 'fresh-token',
         accountId: 'account',
       }),
-      fetchImpl: async () =>
+      fetchImpl: globalThis.fetch,
+      compactionFetchImpl: async () =>
         new Response(
           JSON.stringify({
             output: [
@@ -459,7 +466,8 @@ void test('compactGrokHistory retries OAuth once and preserves the xAI opaque ou
         forceRefreshCalls += 1;
         return { accessToken: 'fresh-token', accountId: 'grok-account' };
       },
-      fetchImpl: async (request, init) => {
+      fetchImpl: globalThis.fetch,
+      compactionFetchImpl: async (request, init) => {
         requestCalls += 1;
         assert.equal(String(request), 'https://api.x.ai/v1/responses/compact');
         assert.equal(init?.method, 'POST');
@@ -532,4 +540,196 @@ void test('compactGrokHistory retries OAuth once and preserves the xAI opaque ou
       endpoint: 'https://api.x.ai/v1',
     }),
   );
+});
+
+void test('compactOpenAiHistory replays durable auth attempts after replacement without another provider dispatch', async () => {
+  const serializedPayloadByAttempt = new Map<number, string>();
+  const dispatchedAttempts = new Set<number>();
+  const subscribedAttempts: number[] = [];
+  let providerDispatches = 0;
+  const input = createOpenAiNativeCompactionInput({
+    providerWebSocketSessions: {
+      acquireWebSocket: () => {
+        throw new Error('not used');
+      },
+      streamDurableHttpSseEvents: async function* (request) {
+        subscribedAttempts.push(request.requestAttempt);
+        assert.equal(
+          request.providerSessionId,
+          'provider-native-compaction:provider-session',
+        );
+        assert.equal(
+          request.requestUrl,
+          'https://chatgpt.test/backend-api/codex/responses/compact',
+        );
+        const admittedPayload = serializedPayloadByAttempt.get(
+          request.requestAttempt,
+        );
+        if (admittedPayload === undefined) {
+          serializedPayloadByAttempt.set(
+            request.requestAttempt,
+            request.serializedPayload,
+          );
+        } else {
+          assert.equal(request.serializedPayload, admittedPayload);
+        }
+        if (!dispatchedAttempts.has(request.requestAttempt)) {
+          dispatchedAttempts.add(request.requestAttempt);
+          providerDispatches += 1;
+        }
+        if (request.requestAttempt === 0) {
+          throw Object.assign(new Error('expired token'), { status: 401 });
+        }
+        yield {
+          output: [
+            {
+              id: 'openai-compaction-id',
+              type: 'compaction',
+              encrypted_content: 'durable-openai-checkpoint',
+            },
+          ],
+          usage: { input_tokens: 101, output_tokens: 20 },
+        };
+      },
+    },
+  });
+  const policy = {
+    providerId: 'openai_codex_direct' as const,
+    model: 'gpt-test',
+    contextWindow: 100_000,
+    thresholdTokens: 90_000,
+    supportsParallelToolCalls: true,
+  };
+  let forceRefreshCalls = 0;
+  const deps = {
+    getProviderAuth: async (options: { allowRefresh?: boolean }) => ({
+      accessToken:
+        options.allowRefresh === false ? 'fresh-token' : 'expired-token',
+      accountId: 'account',
+    }),
+    forceRefreshProviderAuth: async () => {
+      forceRefreshCalls += 1;
+      return { accessToken: 'fresh-token', accountId: 'account' };
+    },
+    fetchImpl: globalThis.fetch,
+    responsesUrl: 'https://chatgpt.test/backend-api/codex/responses',
+  };
+
+  const first = await compactOpenAiHistory(input, policy, deps);
+  const replacement = await compactOpenAiHistory(input, policy, deps);
+
+  assert.equal(providerDispatches, 2);
+  assert.deepEqual(subscribedAttempts, [0, 1, 0, 1]);
+  assert.equal(forceRefreshCalls, 2);
+  assert.deepEqual(replacement, first);
+  assert.deepEqual(replacement.output, [
+    {
+      type: 'compaction',
+      encrypted_content: 'durable-openai-checkpoint',
+    },
+  ]);
+});
+
+void test('compactGrokHistory replays one durable terminal response after replacement', async () => {
+  let admittedPayload: string | undefined;
+  let providerDispatches = 0;
+  let durableSubscriptions = 0;
+  const input = createGrokNativeCompactionInput({
+    providerWebSocketSessions: {
+      acquireWebSocket: () => {
+        throw new Error('not used');
+      },
+      streamDurableHttpSseEvents: async function* (request) {
+        durableSubscriptions += 1;
+        assert.equal(
+          request.providerSessionId,
+          'provider-native-compaction:provider-session',
+        );
+        assert.equal(
+          request.requestUrl,
+          'https://api.x.ai/v1/responses/compact',
+        );
+        assert.equal(request.requestAttempt, 0);
+        if (admittedPayload === undefined) {
+          admittedPayload = request.serializedPayload;
+          providerDispatches += 1;
+        } else {
+          assert.equal(request.serializedPayload, admittedPayload);
+        }
+        yield {
+          output: [
+            {
+              id: 'grok-compaction-id',
+              type: 'compaction',
+              encrypted_content: 'durable-grok-checkpoint',
+            },
+          ],
+          usage: { input_tokens: 88, output_tokens: 12 },
+        };
+      },
+    },
+  });
+  const policy = {
+    providerId: 'grok_oauth' as const,
+    model: 'grok-4.5',
+    contextWindow: 500_000,
+    thresholdTokens: 425_000,
+  };
+  const deps = {
+    getProviderAuth: async () => ({
+      accessToken: 'token',
+      accountId: 'grok-account',
+    }),
+    forceRefreshProviderAuth: async () => ({
+      accessToken: 'fresh-token',
+      accountId: 'grok-account',
+    }),
+    fetchImpl: globalThis.fetch,
+  };
+
+  const first = await compactGrokHistory(input, policy, deps);
+  const replacement = await compactGrokHistory(input, policy, deps);
+
+  assert.equal(providerDispatches, 1);
+  assert.equal(durableSubscriptions, 2);
+  assert.deepEqual(replacement, first);
+  assert.deepEqual(replacement.output, [
+    {
+      id: 'grok-compaction-id',
+      type: 'compaction',
+      encrypted_content: 'durable-grok-checkpoint',
+    },
+  ]);
+});
+
+void test('compactOpenAiHistory fails closed when the durable POST owner is unavailable', async () => {
+  let directFetchCalls = 0;
+  await assert.rejects(
+    compactOpenAiHistory(
+      createOpenAiNativeCompactionInput(),
+      {
+        providerId: 'openai_codex_direct',
+        model: 'gpt-test',
+        contextWindow: 100_000,
+        thresholdTokens: 90_000,
+        supportsParallelToolCalls: true,
+      },
+      {
+        getProviderAuth: async () => ({
+          accessToken: 'token',
+          accountId: 'account',
+        }),
+        forceRefreshProviderAuth: async () => ({
+          accessToken: 'fresh-token',
+          accountId: 'account',
+        }),
+        fetchImpl: async () => {
+          directFetchCalls += 1;
+          throw new Error('must not use the policy GET client for POST');
+        },
+      },
+    ),
+    /durable provider-native compaction transport is unavailable/u,
+  );
+  assert.equal(directFetchCalls, 0);
 });

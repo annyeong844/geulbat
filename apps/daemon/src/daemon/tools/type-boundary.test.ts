@@ -146,8 +146,8 @@ type _StandaloneContextAllowsOptionalWorkingDirectory = Expect<
 type _AgentContextRequiresHomeStateRoot = Expect<
   Equal<AgentToolExecutionContext['stateRoot'], string>
 >;
-type _AgentContextRequiresWorkingDirectory = Expect<
-  Equal<AgentToolExecutionContext['workingDirectory'], string>
+type _AgentContextAllowsOptionalWorkingDirectory = Expect<
+  Equal<AgentToolExecutionContext['workingDirectory'], string | undefined>
 >;
 type _StandaloneContextUsesExplicitKind = Expect<
   Equal<StandaloneToolExecutionContext['kind'], 'standalone' | undefined>

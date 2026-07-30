@@ -157,6 +157,93 @@ void test('kernel owns the model-to-tool-to-model round state machine and event 
   ]);
 });
 
+void test('kernel waits for durable terminal settlement before returning', async () => {
+  let releaseSettlement: (() => void) | undefined;
+  const settlementReleased = new Promise<void>((resolve) => {
+    releaseSettlement = resolve;
+  });
+  let settlementStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    settlementStarted = resolve;
+  });
+
+  const run = runAgentLoopKernel<
+    TestResult,
+    TestFunctionCall,
+    TestStructuredOutput,
+    string
+  >({
+    ports: createSingleRoundPorts({
+      async settleTerminal() {
+        settlementStarted?.();
+        await settlementReleased;
+      },
+    }),
+  });
+
+  await started;
+  assert.equal(
+    await Promise.race([
+      run.then(() => 'completed' as const),
+      Promise.resolve('settling' as const),
+    ]),
+    'settling',
+  );
+  releaseSettlement?.();
+  assert.deepEqual(await run, { ok: true, text: 'done' });
+});
+
+void test('kernel resumes a committed model settlement before any round effects', async () => {
+  const effects: string[] = [];
+  const recoveredResult = { ok: true, text: 'already settled' };
+
+  const result = await runAgentLoopKernel<
+    TestResult,
+    TestFunctionCall,
+    TestStructuredOutput,
+    string
+  >({
+    ports: createSingleRoundPorts({
+      async runModelRound() {
+        return {
+          ok: true,
+          value: {
+            assistantText: 'must not append',
+            terminalResult: { ok: true, text: 'fresh candidate' },
+            functionCalls: [{ name: 'must_not_run' }],
+            itemsToAppend: ['must not append'],
+            structuredOutputs: [{ kind: 'must_not_run' }],
+          },
+        };
+      },
+      async resolveRecoveredModelRound() {
+        return {
+          kind: 'terminal',
+          result: recoveredResult,
+          source: 'no_progress',
+        };
+      },
+      appendHistoryItems() {
+        effects.push('history');
+      },
+      async processStructuredOutputs() {
+        effects.push('structured');
+        return { ok: true, handled: false };
+      },
+      async processFunctionCalls() {
+        effects.push('tool');
+        return { ok: true, value: undefined };
+      },
+      settleTerminal({ result: settled, source }) {
+        effects.push(`settled:${settled.text}:${source}`);
+      },
+    }),
+  });
+
+  assert.equal(result, recoveredResult);
+  assert.deepEqual(effects, ['settled:already settled:no_progress']);
+});
+
 void test('kernel ends the turn after a successful turn-ending tool without another model call', async () => {
   let modelCallCount = 0;
   const terminalCandidates: string[] = [];

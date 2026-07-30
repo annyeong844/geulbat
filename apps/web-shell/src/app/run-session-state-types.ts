@@ -142,6 +142,7 @@ export type RunSessionStateAction =
     }
   | {
       type: 'approval_requested';
+      runId: string;
       threadId: string;
       pendingApproval: ApprovalRequired;
     }

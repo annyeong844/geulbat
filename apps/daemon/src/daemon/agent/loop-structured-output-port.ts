@@ -42,6 +42,7 @@ interface AgentLoopStructuredOutputServices {
   ptc: Pick<AgentRuntimePtcServices, 'fixedProbe'>;
   sandboxAttempts: AgentRuntimeServices['sandboxAttempts'];
   hostCommands: AgentRuntimeServices['hostCommands'];
+  publicHttpRead: AgentRuntimeServices['publicHttpRead'];
 }
 
 export function createAgentLoopStructuredOutputPort(
@@ -70,6 +71,7 @@ export function createAgentLoopStructuredOutputPort(
               functionCalls: args.functionCalls,
               ingressPolicy:
                 runtimeServices.agent.reactBundleStructuredOutputIngressPolicy,
+              publicHttpRead: runtimeServices.publicHttpRead,
               dockerCommandRunner: createReactBundleDockerCommandRunner({
                 hostCommands: runtimeServices.hostCommands,
                 stateRoot: args.runContext.stateRoot,

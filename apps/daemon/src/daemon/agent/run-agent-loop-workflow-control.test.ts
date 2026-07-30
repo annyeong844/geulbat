@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PlanDraftV1 } from '@geulbat/protocol/planning-workflow';
@@ -517,20 +517,29 @@ void test('runAgentLoop surfaces a persisted replay-scope mismatch as a terminal
   }
 });
 
-void test('runAgentLoop accumulates model-round and compaction usage in emission order', async () => {
+void test('runAgentLoop accumulates model-round and compaction usage in emission order', async (t) => {
   const threadId = testThreadId(77);
-  const daemonContext = createDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-usage-'));
+  t.after(async () => rm(workspaceRoot, { recursive: true, force: true }));
+  const runId = testRunId('loop-usage');
+  const daemonContext = createDaemonContext({
+    homeStateRoot: workspaceRoot,
+  });
+  await daemonContext.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { permissionMode: 'basic' },
+  });
   const events: AgentEvent[] = [];
   const runContext = makeRunContext({
     threadId,
     stateRoot: workspaceRoot,
   });
-  const runState = createRunState({ runId: 'run-loop-usage', runContext });
+  const runState = createRunState({ runId, runContext });
 
   const finalRound = providerFinalAnswerRound('usage done');
   const result = await runAgentLoop({
-    runId: 'run-loop-usage',
+    runId,
     runContext,
     prompt: 'report usage',
     runState,
@@ -557,6 +566,12 @@ void test('runAgentLoop accumulates model-round and compaction usage in emission
     callModelImpl: createScriptedProviderCallModel([
       {
         ...finalRound,
+        durableRequest: {
+          requestIdentity: 'b'.repeat(64),
+          providerRequestAttempt: 0,
+          transportKind: 'websocket',
+          resumed: false,
+        },
         events: [
           ...(finalRound.events ?? []),
           {
@@ -773,11 +788,12 @@ void test('runAgentLoop completes after approved tool execution and second-round
   assert.match(transcript[1]?.content ?? '', /tool ok/);
 });
 
-void test('runAgentLoop applies pending interject before the next steer-aware model round', async () => {
+void test('runAgentLoop applies pending interject before the next steer-aware durable model round', async (t) => {
   const threadId = testThreadId(1201);
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-loop-interject-run-'),
   );
+  t.after(async () => rm(workspaceRoot, { recursive: true, force: true }));
   const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
   const events: AgentEvent[] = [];
   const runContext = makeRunContext({
@@ -797,6 +813,12 @@ void test('runAgentLoop applies pending interject before the next steer-aware mo
   const callModelImpl = createScriptedProviderCallModel([
     {
       ...providerFinalAnswerRound('first answer'),
+      durableRequest: {
+        requestIdentity: 'c'.repeat(64),
+        providerRequestAttempt: 0,
+        transportKind: 'websocket',
+        resumed: false,
+      },
       inspectInput(input) {
         assert.equal(
           input.history.some(
@@ -808,6 +830,12 @@ void test('runAgentLoop applies pending interject before the next steer-aware mo
     },
     {
       ...providerFinalAnswerRound('second answer'),
+      durableRequest: {
+        requestIdentity: 'd'.repeat(64),
+        providerRequestAttempt: 0,
+        transportKind: 'websocket',
+        resumed: false,
+      },
       inspectInput(input) {
         const userTurns = input.history
           .filter((item) => item.kind === 'user')
@@ -849,10 +877,9 @@ void test('runAgentLoop applies pending interject before the next steer-aware mo
   });
 
   assert.equal(injected, true);
-  assert.deepEqual(result, {
-    ok: true,
-    finalProse: 'second answer',
-  });
+  assert.equal(result.ok, true);
+  assert.equal(result.finalProse, 'second answer');
+  assert.match(result.modelSettlementIdentity ?? '', /^sha256:[a-f0-9]{64}$/u);
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
     withoutProviderStatus(events).map((event) => event.type),

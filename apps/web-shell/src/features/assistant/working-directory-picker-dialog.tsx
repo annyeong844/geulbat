@@ -23,6 +23,7 @@ export function WorkingDirectoryPickerDialog({
     <ComputerDirectoryPickerDialog
       title="시작 위치 선택"
       confirmLabel="이 폴더 사용"
+      clearLabel="작업 폴더 없이 대화"
       initialPath={overlay.initialPath}
       browsePath={overlay.browsePath}
       browseStartPath={overlay.browseStartPath}
@@ -31,6 +32,7 @@ export function WorkingDirectoryPickerDialog({
       favoriteDirectories={overlay.favoriteDirectories}
       onToggleFavorite={overlay.onToggleFavorite}
       onSelect={overlay.onSelect}
+      onClear={overlay.onClear}
       onClose={overlay.onClose}
     />
   );

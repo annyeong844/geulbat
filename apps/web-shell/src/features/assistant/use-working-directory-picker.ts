@@ -18,7 +18,7 @@ export interface AssistantWorkspace {
   /** 사용자가 직접 고정한 폴더. */
   favoriteDirectories?: readonly DirectoryPreferenceEntry[];
   onToggleFavoriteDirectory?: (path: string, pinned: boolean) => void;
-  onSelectWorkingDirectory: ((path: string) => void) | undefined;
+  onSelectWorkingDirectory: ((path: string | null) => void) | undefined;
   onChooseWorkingDirectory: (() => Promise<void>) | undefined;
 }
 
@@ -35,6 +35,7 @@ export type WorkingDirectoryOverlay =
       favoriteDirectories: readonly DirectoryPreferenceEntry[];
       onToggleFavorite: ((path: string, pinned: boolean) => void) | undefined;
       onSelect: (path: string) => void;
+      onClear: () => void;
       onClose: () => void;
     }
   | { kind: 'error'; message: string }
@@ -97,8 +98,12 @@ export function useWorkingDirectoryPicker({
     void chooseWorkingDirectory();
   }, [browseEnabled, chooseWorkingDirectory, onSelectWorkingDirectory]);
 
-  const contextPath = workingDirectory ?? browseStartPath;
-  const contextLabel = contextPath === '' ? '컴퓨터 루트' : contextPath;
+  const contextLabel =
+    workingDirectory === null
+      ? '작업 폴더 없음'
+      : workingDirectory === ''
+        ? '컴퓨터 루트'
+        : workingDirectory;
   const canChange =
     onSelectWorkingDirectory !== undefined ||
     onChooseWorkingDirectory !== undefined;
@@ -116,6 +121,11 @@ export function useWorkingDirectoryPicker({
       onToggleFavorite: onToggleFavoriteDirectory,
       onSelect: (path: string) => {
         onSelectWorkingDirectory(path);
+        setSelectionError(null);
+        setPickerOpen(false);
+      },
+      onClear: () => {
+        onSelectWorkingDirectory(null);
         setSelectionError(null);
         setPickerOpen(false);
       },

@@ -30,6 +30,7 @@ export interface ProviderRetryDiagnostics {
   available: boolean;
   performed: boolean;
   outcome: ProviderRetryOutcome;
+  retryAfterMs?: number;
 }
 
 export interface ProviderRequestDiagnostics {
@@ -145,7 +146,11 @@ export function isProviderRetryDiagnostics(
     !isRecord(value) ||
     !isBoolean(value.available) ||
     !isBoolean(value.performed) ||
-    !PROVIDER_RETRY_OUTCOMES.some((outcome) => outcome === value.outcome)
+    !PROVIDER_RETRY_OUTCOMES.some((outcome) => outcome === value.outcome) ||
+    (value.retryAfterMs !== undefined &&
+      (!isNumber(value.retryAfterMs) ||
+        !Number.isSafeInteger(value.retryAfterMs) ||
+        value.retryAfterMs < 0))
   ) {
     return false;
   }

@@ -351,6 +351,14 @@ void test('snapshotFromHostCommandMetadata projects metadata and derives duratio
     }),
   );
   assert.equal(running.durationMs >= 0, true);
+
+  const rolledBack = snapshotFromHostCommandMetadata(
+    makeMetadata('thread-snapshot', {
+      startedAtMs: 1_000,
+      finishedAtMs: 500,
+    }),
+  );
+  assert.equal(rolledBack.durationMs, 0);
 });
 
 void test('removeHostCommandDirectory deletes a session tree and tolerates a missing path', async (t) => {

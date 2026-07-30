@@ -22,6 +22,7 @@ export type StreamErrorCategory =
   | 'llm_context_overflow'
   | 'llm_output_budget_exceeded'
   | 'llm_replay_state_rejected'
+  | 'llm_provider_request_outcome_unknown'
   | 'llm_context_preparation_required'
   | 'llm_provider_transition_required'
   | 'oversize_input'
@@ -155,6 +156,17 @@ export const PROVIDER_FAILURE_CLASSES = [
     providerCodes: ['llm_replay_state_rejected', 'invalid_encrypted_content'],
     wireCode: 'llm_replay_state_rejected',
     message: 'provider rejected encrypted reasoning replay',
+    retryBudget: null,
+  },
+  {
+    // 요청이 provider에 전달됐는지 확정할 evidence가 없다. 같은 요청을
+    // 자동 재시도하면 중복 작업·요금이 발생할 수 있으므로 retry budget을
+    // 쓰지 않고, 인증된 사용자 복구 명령으로만 다음 요청을 허용한다.
+    category: 'llm_provider_request_outcome_unknown',
+    providerCodes: ['llm_provider_request_outcome_unknown'],
+    wireCode: 'llm_provider_request_outcome_unknown',
+    message:
+      'provider request outcome is unknown; explicit recovery is required before retrying',
     retryBudget: null,
   },
   {

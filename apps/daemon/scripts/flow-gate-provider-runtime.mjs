@@ -112,18 +112,101 @@ function createRunSettlementProviderScenario({
   };
 }
 
-function createPlanSteerProviderScenario({ prompt, step }) {
+function createPlanSteerProviderScenario({
+  finalText,
+  followupFinalText,
+  followupPrompt,
+  prompt,
+  steerText,
+  step,
+}) {
   const callId = 'flow-gate-plan-steer-call';
+  let flushedRequestCount = 0;
+  let followupRequestCount = 0;
   let toolCallRequestCount = 0;
   let waitingRequestCount = 0;
 
   return {
     matches(serializedRequest) {
       return (
-        serializedRequest.includes(prompt) || serializedRequest.includes(callId)
+        serializedRequest.includes(followupPrompt) ||
+        serializedRequest.includes(prompt) ||
+        serializedRequest.includes(callId)
       );
     },
     dispatch(socket, serializedRequest) {
+      let settledText;
+      let settledItemId;
+      if (serializedRequest.includes(followupPrompt)) {
+        if (
+          toolCallRequestCount !== 1 ||
+          waitingRequestCount !== 1 ||
+          flushedRequestCount !== 1 ||
+          followupRequestCount !== 0
+        ) {
+          throw new Error(
+            'flow-gate provider received an invalid post-steer follow-up request',
+          );
+        }
+        followupRequestCount += 1;
+        settledText = followupFinalText;
+        settledItemId = 'flow-gate-plan-steer-followup-answer';
+      } else if (serializedRequest.includes(steerText)) {
+        if (
+          toolCallRequestCount !== 1 ||
+          waitingRequestCount !== 1 ||
+          flushedRequestCount !== 0 ||
+          followupRequestCount !== 0
+        ) {
+          throw new Error(
+            'flow-gate provider received an invalid explicit steer flush request',
+          );
+        }
+        flushedRequestCount += 1;
+        settledText = finalText;
+        settledItemId = 'flow-gate-plan-steer-flushed-answer';
+      }
+      if (settledText !== undefined && settledItemId !== undefined) {
+        setImmediate(() =>
+          emitProviderEvents(socket, [
+            {
+              type: 'response.output_item.added',
+              item: {
+                id: settledItemId,
+                type: 'message',
+                phase: 'final_answer',
+              },
+            },
+            {
+              type: 'response.output_text.delta',
+              item_id: settledItemId,
+              delta: settledText,
+            },
+            {
+              type: 'response.output_item.done',
+              item: {
+                id: settledItemId,
+                type: 'message',
+                role: 'assistant',
+                status: 'completed',
+                phase: 'final_answer',
+                content: [{ type: 'output_text', text: settledText }],
+              },
+            },
+            {
+              type: 'response.completed',
+              response: {
+                usage: {
+                  input_tokens: 1,
+                  output_tokens: 1,
+                  input_tokens_details: { cached_tokens: 0 },
+                },
+              },
+            },
+          ]),
+        );
+        return;
+      }
       const isWaitingRound =
         serializedRequest.includes('"type":"function_call_output"') &&
         serializedRequest.includes(callId);
@@ -452,8 +535,12 @@ export function createDeterministicProviderRuntime(
     approvalFinalText,
     approvalPrompt,
     approvalTargetPath,
+    planSteerFinalText,
+    planSteerFollowupFinalText,
+    planSteerFollowupPrompt,
     planSteerPrompt,
     planSteerStep,
+    planSteerText,
     runFinalSuffix,
     runSettlementPrompt,
     runStreamPrefix,
@@ -468,7 +555,11 @@ export function createDeterministicProviderRuntime(
     streamPrefix: runStreamPrefix,
   });
   const planSteer = createPlanSteerProviderScenario({
+    finalText: planSteerFinalText,
+    followupFinalText: planSteerFollowupFinalText,
+    followupPrompt: planSteerFollowupPrompt,
     prompt: planSteerPrompt,
+    steerText: planSteerText,
     step: planSteerStep,
   });
   const approval = createApprovalProviderScenario({

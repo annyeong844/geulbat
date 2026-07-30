@@ -53,6 +53,38 @@ void test('RunChannelClient waits for the correlated run.approve acknowledgement
   assert.equal(await approvalPromise, message.requestId);
 });
 
+void test('RunChannelClient waits for explicit provider outcome-unknown recovery', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const request = {
+    threadId: brandThreadId('123e4567-e89b-42d3-a456-426614174091'),
+    acknowledgePossibleDuplicateProviderWork: true as const,
+  };
+
+  const recoveryPromise =
+    harness.client.recoverProviderRequestOutcomeUnknown(request);
+  await Promise.resolve();
+
+  const message = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(message.type, 'run.provider_request.recover');
+  if (message.type !== 'run.provider_request.recover') {
+    return;
+  }
+  assert.deepEqual(message.request, request);
+
+  socket.emitMessage({
+    type: 'run.control',
+    requestId: message.requestId,
+    action: 'run.provider_request.recover',
+    ok: true,
+    disposition: 'terminal_available',
+  });
+
+  assert.equal(await recoveryPromise, 'terminal_available');
+});
+
 void test('RunChannelClient correlates a trusted planning command acknowledgement', async () => {
   const harness = createClientHarness();
   const socket = await connectAuthenticatedClient(harness);

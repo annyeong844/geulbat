@@ -296,6 +296,14 @@ function reduceSingleRunSessionState(
       };
     }
     case 'approval_requested':
+      if (
+        state.phase !== 'running' ||
+        state.activeRunView.runId !== action.runId ||
+        state.activeRunView.threadId !== action.threadId ||
+        action.pendingApproval.threadId !== action.threadId
+      ) {
+        return state;
+      }
       return {
         ...state,
         activeRunView: {

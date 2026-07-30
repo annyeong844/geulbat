@@ -315,8 +315,8 @@ export const PTC_SESSION_DOCKER_DEFAULT_POLICY: PtcSessionDockerPolicy =
     cpus: '1',
     memory: '512m',
     pidsLimit: '128',
-    scratchTmpfs: '/geulbat/scratch:rw,noexec,nosuid,nodev,size=64m',
-    tmpTmpfs: '/tmp:rw,nosuid,nodev,size=64m',
+    scratchTmpfs: '/geulbat/scratch:rw,noexec,nosuid,nodev,mode=1777,size=64m',
+    tmpTmpfs: '/tmp:rw,nosuid,nodev,mode=1777,size=64m',
   });
 
 export function createPtcSessionDockerLocalBatchCommandPolicy(): PtcSessionDockerPolicy {
@@ -327,8 +327,8 @@ export function createPtcSessionDockerLocalBatchCommandPolicy(): PtcSessionDocke
     cpus: '2',
     memory: '2g',
     pidsLimit: '256',
-    scratchTmpfs: '/geulbat/scratch:rw,noexec,nosuid,nodev,size=512m',
-    tmpTmpfs: '/tmp:rw,nosuid,nodev,size=512m',
+    scratchTmpfs: '/geulbat/scratch:rw,noexec,nosuid,nodev,mode=1777,size=512m',
+    tmpTmpfs: '/tmp:rw,nosuid,nodev,mode=1777,size=512m',
   };
 }
 
@@ -352,6 +352,6 @@ export function createPtcSessionDockerOpenNetworkPackageInstallPolicy(args: {
     packageManagerFamilies: [...(args.packageManagerFamilies ?? ['npm'])],
     networkInstallPolicyId: network.networkPolicyId,
     network,
-    tmpTmpfs: `/tmp:rw,nosuid,nodev,size=${args.tmpTmpfsSize}`,
+    tmpTmpfs: `/tmp:rw,nosuid,nodev,mode=1777,size=${args.tmpTmpfsSize}`,
   };
 }

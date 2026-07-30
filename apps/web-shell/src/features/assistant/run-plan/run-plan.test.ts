@@ -13,7 +13,7 @@ import {
 } from './run-plan.js';
 
 function planCallMessage(
-  plan: Array<{ step: string; status: string }>,
+  plan: Array<{ id?: string; step: string; status: string }>,
   entryId: string,
 ): ThreadMessage {
   return {
@@ -32,12 +32,12 @@ void test('update_plan args에서 계획 단계를 읽는다', () => {
   assert.deepEqual(
     readRunPlanFromToolArgs({
       plan: [
-        { step: '저장소 스캔', status: 'completed' },
+        { id: 'scan', step: '저장소 스캔', status: 'completed' },
         { step: '결과 검증', status: 'in_progress' },
       ],
     }),
     [
-      { step: '저장소 스캔', status: 'completed' },
+      { id: 'scan', step: '저장소 스캔', status: 'completed' },
       { step: '결과 검증', status: 'in_progress' },
     ],
   );

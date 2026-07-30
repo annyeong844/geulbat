@@ -35,11 +35,17 @@ import {
 import { readTextFileNoFollow } from './plugin-marketplace-fs.js';
 import {
   inspectMarketplaceRepository,
+  resolveMarketplaceLocalEntryRoot,
   type MarketplaceCatalogSnapshot,
 } from './plugin-marketplace-catalog.js';
+import { pluginIconContentType } from './plugin-package-manifest.js';
 
 const REGISTRY_SCHEMA_VERSION = 2 as const;
 const LEGACY_REGISTRY_SCHEMA_VERSION = 1 as const;
+// Bump when catalog admission or its public projection semantics change. The
+// cache is revision-pinned derived state, never the installation authority.
+const CATALOG_CACHE_SCHEMA_VERSION = 1 as const;
+const CATALOG_CACHE_FILE_NAME = 'catalog-cache.json';
 const MARKETPLACE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 export const OFFICIAL_CODEX_MARKETPLACE_SOURCE = {
@@ -60,6 +66,11 @@ interface LoadedMarketplaceRegistry {
     | typeof LEGACY_REGISTRY_SCHEMA_VERSION
     | typeof REGISTRY_SCHEMA_VERSION;
   sources: PluginMarketplaceSourceView[];
+}
+
+interface PersistedMarketplaceCatalogCache {
+  schemaVersion: typeof CATALOG_CACHE_SCHEMA_VERSION;
+  catalog: PluginMarketplaceListResponse;
 }
 
 interface ResolvedMarketplaceEntryIcon {
@@ -148,6 +159,7 @@ export function createPluginMarketplaceStore(args: {
   ): Promise<MarketplaceCatalogSnapshot> {
     const sourceRoot = join(sourcesRoot, source.marketplaceId);
     const repositoryRoot = join(sourceRoot, 'repository');
+    const cachePath = join(sourceRoot, CATALOG_CACHE_FILE_NAME);
     await assertRegularDirectory(sourceRoot, 'marketplace source');
     await assertRegularDirectory(repositoryRoot, 'marketplace repository');
     const revision = await readGitRevision(
@@ -159,6 +171,24 @@ export function createPluginMarketplaceStore(args: {
       throw new PluginMarketplaceStoreError(
         'corrupt_registry',
         'managed marketplace revision does not match its registry record',
+      );
+    }
+    try {
+      const cached = await readMarketplaceCatalogCache({
+        cachePath,
+        source,
+      });
+      if (cached !== undefined) {
+        return cached;
+      }
+    } catch (error: unknown) {
+      warnCatalogCache(
+        'marketplace catalog cache rejected; rebuilding',
+        source.marketplaceId,
+        safeDiagnosticMessage(
+          'marketplace catalog cache is unavailable or invalid',
+          error,
+        ),
       );
     }
     const snapshot = await inspectMarketplaceRepository({
@@ -180,6 +210,18 @@ export function createPluginMarketplaceStore(args: {
         'managed marketplace identity does not match its registry record',
       );
     }
+    await writeMarketplaceCatalogCache(cachePath, snapshot).catch(
+      (error: unknown) => {
+        warnCatalogCache(
+          'marketplace catalog cache update failed',
+          source.marketplaceId,
+          safeDiagnosticMessage(
+            'marketplace catalog cache could not be persisted',
+            error,
+          ),
+        );
+      },
+    );
     return snapshot;
   }
 
@@ -268,6 +310,19 @@ export function createPluginMarketplaceStore(args: {
         resolvedRevision,
         addedAt: now,
         refreshedAt: now,
+      });
+      await writeMarketplaceCatalogCache(
+        join(finalSourceRoot, CATALOG_CACHE_FILE_NAME),
+        finalSnapshot,
+      ).catch((error: unknown) => {
+        warnCatalogCache(
+          'marketplace catalog cache update failed',
+          marketplaceId,
+          safeDiagnosticMessage(
+            'marketplace catalog cache could not be persisted',
+            error,
+          ),
+        );
       });
       await state.commitRegistered(finalSnapshot);
       return finalSnapshot.source;
@@ -424,11 +479,48 @@ export function createPluginMarketplaceStore(args: {
       ) {
         return null;
       }
-      const icon = state.getSnapshot(marketplaceId)?.iconAssets.get(entryId);
-      if (!icon) {
-        return null;
-      }
+      const catalog = state.getSnapshot(marketplaceId);
+      let icon = catalog?.iconAssets.get(entryId);
       try {
+        if (catalog === undefined) {
+          return null;
+        }
+        if (icon === undefined) {
+          const entry = catalog.entries.find(
+            (candidate) => candidate.entryId === entryId,
+          );
+          if (
+            entry === undefined ||
+            !entry.iconAvailable ||
+            entry.contentDigest === null
+          ) {
+            return null;
+          }
+          const packageRoot = await resolveMarketplaceLocalEntryRoot({
+            repositoryRoot: join(sourcesRoot, marketplaceId, 'repository'),
+            entryId,
+          });
+          if (packageRoot === null) {
+            throw new Error('marketplace icon package root is unavailable');
+          }
+          const inspected = await inspectPluginPackage(packageRoot);
+          const iconPath = inspected.manifest.iconPath;
+          const contentType =
+            iconPath === null ? null : pluginIconContentType(iconPath);
+          if (
+            inspected.manifest.name !== entry.name ||
+            inspected.manifest.version !== entry.version ||
+            inspected.contentDigest !== entry.contentDigest ||
+            iconPath === null ||
+            contentType === null
+          ) {
+            throw new Error(
+              'marketplace icon package changed after inspection',
+            );
+          }
+          icon = { packageRoot, relativePath: iconPath, contentType };
+          catalog.iconAssets.set(entryId, icon);
+        }
         const absolutePath = await checkNoSymlinkPathSegments(
           icon.packageRoot,
           join(icon.packageRoot, ...icon.relativePath.split('/')),
@@ -484,7 +576,21 @@ export function createPluginMarketplaceStore(args: {
             'marketplace plugin selection is stale',
           );
         }
-        const sourceRoot = catalog.localEntryRoots.get(entry.entryId);
+        let sourceRoot = catalog.localEntryRoots.get(entry.entryId);
+        if (sourceRoot === undefined) {
+          sourceRoot =
+            (await resolveMarketplaceLocalEntryRoot({
+              repositoryRoot: join(
+                sourcesRoot,
+                catalog.source.marketplaceId,
+                'repository',
+              ),
+              entryId: entry.entryId,
+            })) ?? undefined;
+          if (sourceRoot !== undefined) {
+            catalog.localEntryRoots.set(entry.entryId, sourceRoot);
+          }
+        }
         if (!sourceRoot) {
           throw new PluginMarketplaceStoreError(
             'corrupt_registry',
@@ -516,6 +622,118 @@ export function createPluginMarketplaceStore(args: {
       });
     },
   };
+}
+
+async function readMarketplaceCatalogCache(args: {
+  cachePath: string;
+  source: PluginMarketplaceSourceView;
+}): Promise<MarketplaceCatalogSnapshot | undefined> {
+  const raw = await readTextFileNoFollow(
+    args.cachePath,
+    'marketplace catalog cache',
+  );
+  if (raw === undefined) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new PluginMarketplaceStoreError(
+      'corrupt_registry',
+      'marketplace catalog cache is not valid JSON',
+    );
+  }
+  if (
+    !isRecord(parsed) ||
+    !hasOnlyKeys(parsed, ['schemaVersion', 'catalog']) ||
+    parsed['schemaVersion'] !== CATALOG_CACHE_SCHEMA_VERSION ||
+    !isPluginMarketplaceListResponse(parsed['catalog'])
+  ) {
+    throw new PluginMarketplaceStoreError(
+      'corrupt_registry',
+      'marketplace catalog cache has an invalid shape',
+    );
+  }
+  const catalog = parsed['catalog'];
+  if (
+    catalog.sources.length !== 1 ||
+    !isSameMarketplaceSource(catalog.sources[0], args.source) ||
+    catalog.entries.some(
+      (entry) =>
+        entry.marketplaceId !== args.source.marketplaceId ||
+        entry.marketplaceName !== args.source.name ||
+        entry.marketplaceDisplayName !== args.source.displayName ||
+        entry.resolvedRevision !== args.source.resolvedRevision ||
+        entry.installedInstallationId !== null,
+    ) ||
+    catalog.diagnostics.some(
+      (diagnostic) => diagnostic.marketplaceId !== args.source.marketplaceId,
+    )
+  ) {
+    throw new PluginMarketplaceStoreError(
+      'corrupt_registry',
+      'marketplace catalog cache does not match its registry source',
+    );
+  }
+  return {
+    source: args.source,
+    entries: catalog.entries,
+    diagnostics: catalog.diagnostics,
+    localEntryRoots: new Map(),
+    iconAssets: new Map(),
+  };
+}
+
+async function writeMarketplaceCatalogCache(
+  cachePath: string,
+  snapshot: MarketplaceCatalogSnapshot,
+): Promise<void> {
+  const cache: PersistedMarketplaceCatalogCache = {
+    schemaVersion: CATALOG_CACHE_SCHEMA_VERSION,
+    catalog: {
+      sources: [snapshot.source],
+      entries: snapshot.entries.map((entry) => ({
+        ...entry,
+        installedInstallationId: null,
+      })),
+      diagnostics: snapshot.diagnostics,
+    },
+  };
+  await writeTextFileAtomically(
+    cachePath,
+    `${JSON.stringify(cache, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+}
+
+function isSameMarketplaceSource(
+  left: PluginMarketplaceSourceView | undefined,
+  right: PluginMarketplaceSourceView,
+): boolean {
+  return (
+    left !== undefined &&
+    left.marketplaceId === right.marketplaceId &&
+    left.name === right.name &&
+    left.displayName === right.displayName &&
+    left.sourceRole === right.sourceRole &&
+    left.sourceKind === right.sourceKind &&
+    left.sourceUrl === right.sourceUrl &&
+    left.requestedRef === right.requestedRef &&
+    left.resolvedRevision === right.resolvedRevision &&
+    left.addedAt === right.addedAt &&
+    left.refreshedAt === right.refreshedAt
+  );
+}
+
+function warnCatalogCache(
+  message: string,
+  marketplaceId: string,
+  detail: string,
+): void {
+  process.emitWarning(`${message} (${marketplaceId}): ${detail}`, {
+    code: 'GEULBAT_MARKETPLACE_CATALOG_CACHE',
+  });
 }
 
 async function readRegistry(

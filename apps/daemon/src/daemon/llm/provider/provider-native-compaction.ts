@@ -55,7 +55,9 @@ export type ProviderNativeCompactionInput = Pick<
   | 'providerRequestOptions'
   | 'providerReplayScopeId'
   | 'signal'
->;
+> & {
+  providerWebSocketSessions?: CallModelInput['providerWebSocketSessions'];
+};
 
 export type OpenAiNativeCompactionInput = ProviderNativeCompactionInput;
 
@@ -92,6 +94,7 @@ interface OpenAiNativeCompactionDependencies {
   getProviderAuth: typeof getProviderAuth;
   forceRefreshProviderAuth: typeof forceRefreshProviderAuth;
   fetchImpl: typeof fetch;
+  compactionFetchImpl?: typeof fetch;
   responsesUrl?: string;
   clientVersion?: string;
 }
@@ -100,6 +103,7 @@ interface GrokNativeCompactionDependencies {
   getProviderAuth: typeof getProviderAuth;
   forceRefreshProviderAuth: typeof forceRefreshProviderAuth;
   fetchImpl: typeof fetch;
+  compactionFetchImpl?: typeof fetch;
 }
 
 const defaultOpenAiNativeCompactionDependencies: OpenAiNativeCompactionDependencies =
@@ -129,20 +133,24 @@ export async function resolveOpenAiNativeCompactionPolicy(
     deps.clientVersion ?? process.env.npm_package_version ?? '0.0.0',
   );
 
-  const payload = await requestOpenAiOAuthJson(input, deps, async (auth) => {
-    const headers = buildResponsesRequestHeaders({
-      accessToken: auth.accessToken,
-      accountId: auth.accountId,
-      providerSessionId: input.providerSessionId,
-    });
-    headers.set('accept', 'application/json');
-    const response = await deps.fetchImpl(modelsUrl, {
-      method: 'GET',
-      headers,
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    });
-    return parseOpenAiOAuthJsonResponse(response, 'model catalog');
-  });
+  const payload = await requestOpenAiOAuthJson(
+    input,
+    deps,
+    async (auth, _requestAttempt) => {
+      const headers = buildResponsesRequestHeaders({
+        accessToken: auth.accessToken,
+        accountId: auth.accountId,
+        providerSessionId: input.providerSessionId,
+      });
+      headers.set('accept', 'application/json');
+      const response = await deps.fetchImpl(modelsUrl, {
+        method: 'GET',
+        headers,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      });
+      return parseOpenAiOAuthJsonResponse(response, 'model catalog');
+    },
+  );
   const model = readOpenAiModelDescriptor(
     payload,
     input.providerRequestOptions.model,
@@ -191,47 +199,56 @@ export async function compactOpenAiHistory(
   const responsesUrl = resolveCodexResponsesUrl(deps.responsesUrl);
   const compactUrl = `${responsesUrl}/compact`;
   let providerReplayScopeId: ProviderReplayScopeId | undefined;
-  const payload = await requestOpenAiOAuthJson(input, deps, async (auth) => {
-    providerReplayScopeId = createProviderReplayScopeId({
-      providerId: policy.providerId,
-      accountId: auth.accountId,
-      endpoint: responsesUrl,
-    });
-    assertProviderReplayScope(
-      providerReplayScopeId,
-      input.providerReplayScopeId,
-    );
-    const body = {
-      model: policy.model,
-      input: buildResponseWireInput(input.history, {
+  const payload = await requestOpenAiOAuthJson(
+    input,
+    deps,
+    async (auth, requestAttempt) => {
+      providerReplayScopeId = createProviderReplayScopeId({
         providerId: policy.providerId,
-        model: policy.model,
+        accountId: auth.accountId,
+        endpoint: responsesUrl,
+      });
+      assertProviderReplayScope(
         providerReplayScopeId,
-      }),
-      ...(instructions !== undefined ? { instructions } : {}),
-      ...(tools === undefined ? {} : { tools }),
-      parallel_tool_calls: policy.supportsParallelToolCalls,
-      reasoning: input.providerRequestOptions.reasoning,
-      service_tier: resolveCodexWireServiceTier(
-        input.providerRequestOptions.serviceTier,
-      ),
-      prompt_cache_key: promptCacheProjection.wire.prompt_cache_key,
-      text: input.providerRequestOptions.text,
-    };
-    const headers = buildResponsesRequestHeaders({
-      accessToken: auth.accessToken,
-      accountId: auth.accountId,
-      providerSessionId: input.providerSessionId,
-    });
-    headers.set('accept', 'application/json');
-    const response = await deps.fetchImpl(compactUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    });
-    return parseOpenAiOAuthJsonResponse(response, 'native compaction');
-  });
+        input.providerReplayScopeId,
+      );
+      const body = {
+        model: policy.model,
+        input: buildResponseWireInput(input.history, {
+          providerId: policy.providerId,
+          model: policy.model,
+          providerReplayScopeId,
+        }),
+        ...(instructions !== undefined ? { instructions } : {}),
+        ...(tools === undefined ? {} : { tools }),
+        parallel_tool_calls: policy.supportsParallelToolCalls,
+        reasoning: input.providerRequestOptions.reasoning,
+        service_tier: resolveCodexWireServiceTier(
+          input.providerRequestOptions.serviceTier,
+        ),
+        prompt_cache_key: promptCacheProjection.wire.prompt_cache_key,
+        text: input.providerRequestOptions.text,
+      };
+      const headers = buildResponsesRequestHeaders({
+        accessToken: auth.accessToken,
+        accountId: auth.accountId,
+        providerSessionId: input.providerSessionId,
+      });
+      headers.set('accept', 'application/json');
+      return await requestProviderNativeCompactionJson({
+        input,
+        requestUrl: compactUrl,
+        headers,
+        serializedPayload: JSON.stringify(body),
+        requestAttempt,
+        ...(deps.compactionFetchImpl === undefined
+          ? {}
+          : { directFetchImpl: deps.compactionFetchImpl }),
+        parseDirectResponse: (response) =>
+          parseOpenAiOAuthJsonResponse(response, 'native compaction'),
+      });
+    },
+  );
 
   const providerUsageTelemetry = readProviderNativeCompactionUsage(payload);
   return {
@@ -250,18 +267,22 @@ export async function resolveGrokNativeCompactionPolicy(
     input.providerRequestOptions.model,
   );
   const modelUrl = `${model.baseUrl.replace(/\/+$/u, '')}/models/${encodeURIComponent(model.wireModel)}`;
-  const payload = await requestGrokOAuthJson(input, deps, async (auth) => {
-    const headers = buildGrokOAuthResponsesHeaders({
-      accessToken: auth.accessToken,
-    });
-    headers.set('accept', 'application/json');
-    const response = await deps.fetchImpl(modelUrl, {
-      method: 'GET',
-      headers,
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    });
-    return parseGrokOAuthJsonResponse(response, 'model descriptor');
-  });
+  const payload = await requestGrokOAuthJson(
+    input,
+    deps,
+    async (auth, _requestAttempt) => {
+      const headers = buildGrokOAuthResponsesHeaders({
+        accessToken: auth.accessToken,
+      });
+      headers.set('accept', 'application/json');
+      const response = await deps.fetchImpl(modelUrl, {
+        method: 'GET',
+        headers,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      });
+      return parseGrokOAuthJsonResponse(response, 'model descriptor');
+    },
+  );
   const contextWindow = readGrokModelContextWindow(payload, model.wireModel);
   const thresholdTokens = Math.floor(
     (contextWindow * GROK_BUILD_AUTO_COMPACT_CONTEXT_NUMERATOR) /
@@ -299,42 +320,51 @@ export async function compactGrokHistory(
   const instructions = buildProviderInstructions(input);
   const compactUrl = `${model.baseUrl.replace(/\/+$/u, '')}/responses/compact`;
   let providerReplayScopeId: ProviderReplayScopeId | undefined;
-  const payload = await requestGrokOAuthJson(input, deps, async (auth) => {
-    providerReplayScopeId = createProviderReplayScopeId({
-      providerId: model.providerId,
-      accountId: auth.accountId,
-      endpoint: model.baseUrl,
-    });
-    assertProviderReplayScope(
-      providerReplayScopeId,
-      input.providerReplayScopeId,
-    );
-    const body = {
-      model: model.wireModel,
-      input: [
-        ...(instructions === undefined
-          ? []
-          : [{ role: 'system', content: instructions }]),
-        ...buildResponseWireInput(input.history, {
-          providerId: model.providerId,
-          model: model.id,
-          providerReplayScopeId,
-        }),
-      ],
-    };
-    const headers = buildGrokOAuthResponsesHeaders({
-      accessToken: auth.accessToken,
-    });
-    headers.set('accept', 'application/json');
-    headers.set('content-type', 'application/json');
-    const response = await deps.fetchImpl(compactUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    });
-    return parseGrokOAuthJsonResponse(response, 'native compaction');
-  });
+  const payload = await requestGrokOAuthJson(
+    input,
+    deps,
+    async (auth, requestAttempt) => {
+      providerReplayScopeId = createProviderReplayScopeId({
+        providerId: model.providerId,
+        accountId: auth.accountId,
+        endpoint: model.baseUrl,
+      });
+      assertProviderReplayScope(
+        providerReplayScopeId,
+        input.providerReplayScopeId,
+      );
+      const body = {
+        model: model.wireModel,
+        input: [
+          ...(instructions === undefined
+            ? []
+            : [{ role: 'system', content: instructions }]),
+          ...buildResponseWireInput(input.history, {
+            providerId: model.providerId,
+            model: model.id,
+            providerReplayScopeId,
+          }),
+        ],
+      };
+      const headers = buildGrokOAuthResponsesHeaders({
+        accessToken: auth.accessToken,
+      });
+      headers.set('accept', 'application/json');
+      headers.set('content-type', 'application/json');
+      return await requestProviderNativeCompactionJson({
+        input,
+        requestUrl: compactUrl,
+        headers,
+        serializedPayload: JSON.stringify(body),
+        requestAttempt,
+        ...(deps.compactionFetchImpl === undefined
+          ? {}
+          : { directFetchImpl: deps.compactionFetchImpl }),
+        parseDirectResponse: (response) =>
+          parseGrokOAuthJsonResponse(response, 'native compaction'),
+      });
+    },
+  );
 
   const providerUsageTelemetry = readProviderNativeCompactionUsage(payload);
   return {
@@ -415,13 +445,65 @@ function assertGrokNativeCompactionInput(
   }
 }
 
+async function requestProviderNativeCompactionJson(args: {
+  input: ProviderNativeCompactionInput;
+  requestUrl: string;
+  headers: Headers;
+  serializedPayload: string;
+  requestAttempt: number;
+  directFetchImpl?: typeof fetch;
+  parseDirectResponse: (response: Response) => Promise<unknown>;
+}): Promise<unknown> {
+  const streamDurableEvents =
+    args.input.providerWebSocketSessions?.streamDurableHttpSseEvents;
+  if (streamDurableEvents !== undefined) {
+    let response: Record<string, unknown> | undefined;
+    for await (const event of streamDurableEvents({
+      requestUrl: args.requestUrl,
+      headers: args.headers,
+      serializedPayload: args.serializedPayload,
+      providerSessionId: `provider-native-compaction:${args.input.providerSessionId}`,
+      requestAttempt: args.requestAttempt,
+      ...(args.input.signal === undefined ? {} : { signal: args.input.signal }),
+    })) {
+      if (response !== undefined) {
+        throw new Error(
+          'durable provider-native compaction returned more than one JSON object',
+        );
+      }
+      response = event;
+    }
+    if (response === undefined) {
+      throw new Error(
+        'durable provider-native compaction returned no JSON object',
+      );
+    }
+    return response;
+  }
+  if (args.directFetchImpl === undefined) {
+    throw new Error(
+      'durable provider-native compaction transport is unavailable',
+    );
+  }
+  const response = await args.directFetchImpl(args.requestUrl, {
+    method: 'POST',
+    headers: args.headers,
+    body: args.serializedPayload,
+    ...(args.input.signal === undefined ? {} : { signal: args.input.signal }),
+  });
+  return await args.parseDirectResponse(response);
+}
+
 async function requestOpenAiOAuthJson(
   input: OpenAiNativeCompactionInput,
   deps: OpenAiNativeCompactionDependencies,
-  request: (auth: {
-    accessToken: string;
-    accountId: string;
-  }) => Promise<unknown>,
+  request: (
+    auth: {
+      accessToken: string;
+      accountId: string;
+    },
+    requestAttempt: number,
+  ) => Promise<unknown>,
 ): Promise<unknown> {
   let authRefreshAttempts = 0;
 
@@ -431,7 +513,7 @@ async function requestOpenAiOAuthJson(
       runtimeStore: input.providerAuthRuntime,
     });
     try {
-      return await request(auth);
+      return await request(auth, authRefreshAttempts);
     } catch (error: unknown) {
       const decision = decideProviderRetryPolicy({
         error,
@@ -455,10 +537,13 @@ async function requestOpenAiOAuthJson(
 async function requestGrokOAuthJson(
   input: ProviderNativeCompactionInput,
   deps: GrokNativeCompactionDependencies,
-  request: (auth: {
-    accessToken: string;
-    accountId: string;
-  }) => Promise<unknown>,
+  request: (
+    auth: {
+      accessToken: string;
+      accountId: string;
+    },
+    requestAttempt: number,
+  ) => Promise<unknown>,
 ): Promise<unknown> {
   let authRefreshAttempts = 0;
 
@@ -469,7 +554,7 @@ async function requestGrokOAuthJson(
       runtimeStore: input.providerAuthRuntime,
     });
     try {
-      return await request(auth);
+      return await request(auth, authRefreshAttempts);
     } catch (error: unknown) {
       const decision = decideProviderRetryPolicy({
         error,

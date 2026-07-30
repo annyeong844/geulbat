@@ -6,6 +6,11 @@ import { ThreadList } from '../features/thread-list/ThreadList.js';
 import { ThreadDeleteConfirm } from '../features/thread-list/ThreadDeleteConfirm.js';
 import { SessionManagerOverlay } from '../features/thread-list/SessionManagerOverlay.js';
 import { Editor } from '../features/editor/Editor.js';
+import {
+  GitReviewSummaryTrigger,
+  GitReviewSurface,
+} from '../features/git-review/GitReviewSurface.js';
+import { useGitReview } from '../features/git-review/use-git-review.js';
 import { Assistant } from '../features/assistant/Assistant.js';
 import { ArtifactEditorSurface } from '../features/assistant/artifact-pane/artifact-editor-surface.js';
 import { Approvals } from '../features/approvals/Approvals.js';
@@ -55,7 +60,12 @@ const DAEMON_STATE_LABEL: Record<DaemonConnectionState, string> = {
 };
 
 type RightPaneTab = 'chat' | 'sessions';
-type CenterSurface = 'editor' | 'extensions' | 'settings' | 'sessions';
+type CenterSurface =
+  | 'editor'
+  | 'extensions'
+  | 'review'
+  | 'settings'
+  | 'sessions';
 
 export function HomeShell(props: HomeShellProps) {
   const {
@@ -72,6 +82,7 @@ export function HomeShell(props: HomeShellProps) {
     recentFiles,
     openFile,
     removeRecentFile,
+    fileMutationGeneration,
     upsertThreadArtifactVersion,
   } = useHomeShell(props);
   const daemon = useDaemonConnection({
@@ -127,8 +138,25 @@ export function HomeShell(props: HomeShellProps) {
   const extensionsTriggerRef = useRef<HTMLButtonElement>(null);
   const restoreCenterTriggerFocus = useRef<Exclude<
     CenterSurface,
-    'editor'
+    'editor' | 'review' | 'sessions'
   > | null>(null);
+  const [runSettlementGeneration, setRunSettlementGeneration] = useState(0);
+  const runBusy =
+    rightPanelView.assistant.runState.isRunning ||
+    rightPanelView.assistant.runState.isStarting === true ||
+    rightPanelView.assistant.runState.isSettling === true;
+  const previousRunBusyRef = useRef(runBusy);
+  useEffect(() => {
+    if (previousRunBusyRef.current && !runBusy) {
+      setRunSettlementGeneration((current) => current + 1);
+    }
+    previousRunBusyRef.current = runBusy;
+  }, [runBusy]);
+  const gitReview = useGitReview({
+    workingDirectory,
+    reviewOpen: centerSurface === 'review',
+    refreshGeneration: fileMutationGeneration + runSettlementGeneration,
+  });
   // 채팅 모드에서는 중앙(에디터)이 내려가고 채팅이 그 자리를 차지한다
   const artifactSurfaceOpen =
     artifactSurface.artifactSurfaceMode !== null &&
@@ -150,7 +178,8 @@ export function HomeShell(props: HomeShellProps) {
     effectiveLayoutMode === 'chat-only';
   const rightCollapsed =
     !centerHidden &&
-    (effectiveLayoutMode === 'no-chat' ||
+    (centerSurface === 'review' ||
+      effectiveLayoutMode === 'no-chat' ||
       effectiveLayoutMode === 'editor-only' ||
       artifactSurface.artifactExpanded);
 
@@ -188,6 +217,11 @@ export function HomeShell(props: HomeShellProps) {
   const isDaemonReadOnly = daemon.state === 'disconnected';
 
   const { setArtifactExpanded } = artifactSurface;
+  const openGitReview = useCallback(() => {
+    setCenterSurface('review');
+    setArtifactExpanded(false);
+    setLayoutMode((current) => (current === 'chat-only' ? 'default' : current));
+  }, [setArtifactExpanded]);
   const openComposerCenterSurface = useCallback(
     (surface: Extract<CenterSurface, 'extensions' | 'settings'>) => {
       setCenterSurface(surface);
@@ -400,20 +434,24 @@ export function HomeShell(props: HomeShellProps) {
               ? ' settings-open'
               : centerSurface === 'extensions'
                 ? ' extensions-open'
-                : ''
+                : centerSurface === 'review'
+                  ? ' review-open'
+                  : ''
           }${artifactSurface.artifactExpanded ? ' artifact-expanded' : ''}${centerHidden ? ' center-hidden' : ''}`}
           aria-label={
             centerSurface === 'settings'
               ? '설정'
               : centerSurface === 'extensions'
                 ? '플러그인과 스킬'
-                : artifactSurface.artifactSurfaceMode !== null &&
-                    artifactSurface.centerArtifact !== null
-                  ? '아티팩트'
-                  : '편집기'
+                : centerSurface === 'review'
+                  ? 'Git 변경 검토'
+                  : artifactSurface.artifactSurfaceMode !== null &&
+                      artifactSurface.centerArtifact !== null
+                    ? '아티팩트'
+                    : '편집기'
           }
         >
-          {rightCollapsed ? (
+          {rightCollapsed && centerSurface !== 'review' ? (
             <span className="panel-reopen right">
               <ShellLayoutMenu
                 mode={effectiveLayoutMode}
@@ -426,6 +464,7 @@ export function HomeShell(props: HomeShellProps) {
             settingsOpen={centerSurface === 'settings'}
             extensionsOpen={centerSurface === 'extensions'}
             sessionsOpen={centerSurface === 'sessions'}
+            reviewOpen={centerSurface === 'review'}
             sessions={
               <SessionManagerOverlay
                 threads={leftPanelView.threadList.threads}
@@ -453,6 +492,13 @@ export function HomeShell(props: HomeShellProps) {
                 onOpenFolder={openBrowseDirectoryPicker}
                 onOpenRecentFile={openFile}
                 onRemoveRecentFile={removeRecentFile}
+                gitReviewTrigger={
+                  <GitReviewSummaryTrigger
+                    summary={gitReview.changedSummary}
+                    disabled={isDaemonReadOnly}
+                    onOpen={openGitReview}
+                  />
+                }
                 {...(artifactSurface.centerArtifact !== null
                   ? {
                       artifactPill: {
@@ -505,6 +551,12 @@ export function HomeShell(props: HomeShellProps) {
                   restoreCenterTriggerFocus.current = 'extensions';
                   setCenterSurface('editor');
                 }}
+              />
+            }
+            review={
+              <GitReviewSurface
+                controller={gitReview}
+                onClose={() => setCenterSurface('editor')}
               />
             }
             settings={

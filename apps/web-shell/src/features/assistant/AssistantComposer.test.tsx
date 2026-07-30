@@ -289,7 +289,6 @@ void test('the plus menu opens the start-location picker without changing file a
         serviceTier="standard"
         subagentModelRouting={{ mode: 'auto' }}
         workingDirectory="home/user/old-project"
-        browseStartPath="home/user"
         onOpenWorkingDirectoryPicker={() => {
           openCount += 1;
         }}

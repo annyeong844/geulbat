@@ -8,6 +8,7 @@ import {
 import type { ProviderReplayScopeId } from '../../runtime-contracts.js';
 import { isRecord } from '../../runtime-json.js';
 import { buildResponseWireInput } from './transport/responses-wire-input.js';
+import type { DurableProviderRequestPreparedHandler } from './transport/responses-durable-request.js';
 import {
   streamResponsesOverWebSocket,
   type ResponsesRequestPreparedHandler,
@@ -18,6 +19,7 @@ import type {
   FunctionCallArgsDelta,
 } from './transport/responses-parser-shared.js';
 import type {
+  ProviderAdmissionFallbackDelayResolver,
   ResponsesWebSocketAdmissionObserver,
   ResponsesWebSocketReusePolicy,
   ResponsesWebSocketSessionStore,
@@ -64,12 +66,14 @@ interface GrokOAuthResponsesStreamInput extends GrokOAuthResponsesBodyInput {
   accessToken: string;
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
-    'acquireWebSocket' | 'streamDurableResponseEvents'
+    'acquireWebSocket' | 'deferProviderRequests' | 'streamDurableResponseEvents'
   >;
   requestAttempt?: number;
+  resumeRequestIdentity?: string;
   signal?: AbortSignal;
   discoverySink?: ResponsesWireDiscoverySink;
   onRequestPrepared?: ResponsesRequestPreparedHandler;
+  onDurableRequestPrepared?: DurableProviderRequestPreparedHandler;
   onAdmissionState?: ResponsesWebSocketAdmissionObserver;
   conversationRoutingId?: string;
 }
@@ -77,6 +81,7 @@ interface GrokOAuthResponsesStreamInput extends GrokOAuthResponsesBodyInput {
 interface GrokOAuthResponsesStreamOptions {
   onAssistantDelta?: (delta: AssistantDelta) => void;
   onFunctionCallArgsDelta?: (delta: FunctionCallArgsDelta) => void;
+  resolveProviderAdmissionFallbackDelayMs?: ProviderAdmissionFallbackDelayResolver;
 }
 
 interface GrokOAuthResponsesRequestBody {
@@ -250,6 +255,9 @@ export async function streamGrokOAuthResponses(
     historyProjection: 'provider_output',
     providerSessionId: input.providerSessionId,
     requestAttempt: input.requestAttempt ?? 0,
+    ...(input.resumeRequestIdentity === undefined
+      ? {}
+      : { resumeRequestIdentity: input.resumeRequestIdentity }),
     webSocketReusePolicy: GROK_OAUTH_RESPONSES_WEBSOCKET_REUSE_POLICY,
     providerWebSocketSessions: input.providerWebSocketSessions,
     normalizeEvent: normalizeGrokOAuthResponseEventForParser,
@@ -259,6 +267,9 @@ export async function streamGrokOAuthResponses(
       : {}),
     ...(input.onRequestPrepared !== undefined
       ? { onRequestPrepared: input.onRequestPrepared }
+      : {}),
+    ...(input.onDurableRequestPrepared !== undefined
+      ? { onDurableRequestPrepared: input.onDurableRequestPrepared }
       : {}),
     ...(input.onAdmissionState !== undefined
       ? { onAdmissionState: input.onAdmissionState }
@@ -270,6 +281,12 @@ export async function streamGrokOAuthResponses(
     ...(options.onFunctionCallArgsDelta !== undefined
       ? { onFunctionCallArgsDelta: options.onFunctionCallArgsDelta }
       : {}),
+    ...(options.resolveProviderAdmissionFallbackDelayMs === undefined
+      ? {}
+      : {
+          resolveProviderAdmissionFallbackDelayMs:
+            options.resolveProviderAdmissionFallbackDelayMs,
+        }),
   });
   return {
     ...result,

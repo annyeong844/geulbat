@@ -1,16 +1,10 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import https from 'node:https';
 
 import { z } from 'zod';
 
 import type { AgentRuntimeServices } from '../../daemon-runtime-contract.js';
-import {
-  guardedLookupPublicAddress,
-  parseHttpUrl,
-  type HttpLookup,
-} from '../../network/http-url-guard.js';
-import { runDetached } from '../../utils/run-detached.js';
+import { parseHttpUrl, type HttpLookup } from '../../network/http-url-guard.js';
 import { defineZodTool } from '../zod-tool.js';
 
 const DUCKDUCKGO_SEARCH_ENDPOINTS = [
@@ -206,7 +200,23 @@ export async function searchWeb(args: {
     }
   }
 
-  const request = args.duckDuckGoRequest ?? requestPublicWebSearch;
+  const request = args.duckDuckGoRequest;
+  if (request === undefined) {
+    const unavailable: WebSearchProviderAttempt = {
+      provider: 'duckduckgo',
+      status: 'failed',
+      reasonCode: 'provider_error',
+      message: 'Host-routed public HTTP transport is unavailable.',
+    };
+    attempts.push(unavailable);
+    return webSearchFailure({
+      provider: 'duckduckgo',
+      query,
+      reasonCode: unavailable.reasonCode,
+      message: unavailable.message,
+      attempts,
+    });
+  }
   for (const endpoint of DUCKDUCKGO_SEARCH_ENDPOINTS) {
     let response: WebSearchHttpResponse;
     try {
@@ -301,6 +311,7 @@ export async function searchWeb(args: {
 export function createWebSearchTool(
   deps: {
     searchWeb?: typeof searchWeb;
+    publicHttpRead?: AgentRuntimeServices['publicHttpRead'];
   } = {},
 ) {
   const runSearch = deps.searchWeb ?? searchWeb;
@@ -334,7 +345,8 @@ export function createWebSearchTool(
         'Opening a known URL, reading full page bodies, or searching local files.',
     },
     async executeParsed(args: WebSearchArgs, ctx) {
-      const provider = ctx.runtimeServices?.provider;
+      const runtimeServices = ctx.runtimeServices;
+      const provider = runtimeServices?.provider;
       const selectedProvider = ctx.providerRunSelection?.providerModel;
       const nativeSearch =
         selectedProvider?.providerId !== 'openai_codex_direct' ||
@@ -345,9 +357,36 @@ export function createWebSearchTool(
               runtime: provider.nativeWebSearch,
               providerSessionId: ctx.runId ?? ctx.callId,
             };
+      const publicHttpRead =
+        deps.publicHttpRead ?? runtimeServices?.publicHttpRead;
+      const duckDuckGoRequest =
+        publicHttpRead === undefined
+          ? undefined
+          : async (
+              request: WebSearchHttpRequest,
+            ): Promise<WebSearchHttpResponse> => {
+              const response = await publicHttpRead.request({
+                url: request.url.href,
+                method: request.method,
+                headers: request.headers,
+                bodyBase64: request.body.toString('base64'),
+                responseBodyMode: 'full',
+                ...(request.signal === undefined
+                  ? {}
+                  : { signal: request.signal }),
+              });
+              if (!response.ok) {
+                throw new Error(response.message);
+              }
+              return {
+                status: response.status,
+                body: Buffer.from(response.bodyBase64, 'base64'),
+              };
+            };
       const output = await runSearch({
         query: args.query,
         ...(nativeSearch === undefined ? {} : { nativeSearch }),
+        ...(duckDuckGoRequest === undefined ? {} : { duckDuckGoRequest }),
         ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
       });
       if (!output.ok) {
@@ -490,85 +529,6 @@ function readDuckDuckGoResultUrl(
     return readPublicResultUrl(redirected);
   }
   return readPublicResultUrl(parsed.href);
-}
-
-function requestPublicWebSearch(
-  args: WebSearchHttpRequest,
-): Promise<WebSearchHttpResponse> {
-  if (isSearchAborted(args.signal)) {
-    return Promise.reject(new Error('web_search aborted'));
-  }
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (callback: () => void, cleanup: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      callback();
-    };
-    const request = https.request(
-      args.url,
-      {
-        method: args.method,
-        headers: args.headers,
-        lookup(hostname, lookupOptions, callback) {
-          runDetached('tools/web-search-lookup', () =>
-            guardedLookupPublicAddress(hostname, {
-              label: 'web_search provider',
-              ...(args.lookup === undefined ? {} : { lookup: args.lookup }),
-            })
-              .then((record) => {
-                if (lookupOptions.all) {
-                  callback(null, [record]);
-                  return;
-                }
-                callback(null, record.address, record.family);
-              })
-              .catch((error: unknown) => {
-                const lookupError =
-                  error instanceof Error ? error : new Error(String(error));
-                if (lookupOptions.all) {
-                  callback(lookupError, []);
-                  return;
-                }
-                callback(lookupError, '', 4);
-              }),
-          );
-        },
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer) => {
-          chunks.push(chunk);
-        });
-        response.on('end', () => {
-          finish(
-            () =>
-              resolve({
-                status: response.statusCode ?? 0,
-                body: Buffer.concat(chunks),
-              }),
-            cleanup,
-          );
-        });
-        response.on('error', (error) => {
-          finish(() => reject(error), cleanup);
-        });
-      },
-    );
-    const abort = () => request.destroy(new Error('web_search aborted'));
-    const cleanup = () => {
-      args.signal?.removeEventListener('abort', abort);
-    };
-    args.signal?.addEventListener('abort', abort, { once: true });
-    request.on('error', (error) => {
-      finish(() => reject(error), cleanup);
-    });
-    request.end(args.body);
-  });
 }
 
 function readPublicResultUrl(value: string): URL | undefined {

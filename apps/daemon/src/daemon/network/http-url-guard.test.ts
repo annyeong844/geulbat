@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  guardedLookupPublicAddress,
   isUnsafeHttpAddress,
   isUnsafeHttpHostname,
   parseHttpUrl,
 } from './http-url-guard.js';
+import { guardedLookupPublicAddress } from '../../command-host/public-http-address-guard.js';
 
 void test('parseHttpUrl accepts absolute http and https URLs', () => {
   assert.equal(parseHttpUrl('https://esm.sh/react@18.2.0').ok, true);

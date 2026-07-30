@@ -422,6 +422,8 @@ export function createAgentSendInputTool(
           }
         }
       }
+      const workingDirectory =
+        agentCtx?.workingDirectory ?? ctx.workingDirectory;
       const result = await runSubagentLaunchPipeline({
         task,
         subagentType,
@@ -429,8 +431,7 @@ export function createAgentSendInputTool(
         parentRunId,
         ownerThreadId,
         stateRoot,
-        workingDirectory:
-          agentCtx?.workingDirectory ?? ctx.workingDirectory ?? '',
+        ...(workingDirectory === undefined ? {} : { workingDirectory }),
         childRunId: childRunHandleId,
         childThreadId: childRecord.childThreadId,
         childInputPersistence: recoveryState.childInput,

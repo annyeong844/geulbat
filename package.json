@@ -26,6 +26,7 @@
     "schedule:xharness-tool-choice-critic": "node --import tsx scripts/schedule-xharness-tool-choice-critic.mjs",
     "probe:xharness-live-provider": "node --import tsx scripts/probe-xharness-live-provider.mjs",
     "probe:plan-mode-qwen-e2e": "node --import tsx scripts/probe-plan-mode-qwen-e2e.mjs",
+    "probe:agent-edge-cases-qwen-e2e": "node --import tsx scripts/probe-agent-edge-cases-qwen-e2e.mjs",
     "probe:tool-library-provider-exposure-e2e": "node --import tsx scripts/probe-tool-library-provider-exposure-e2e.mjs",
     "probe:tool-library-qwen-product-default-e2e": "node --import tsx scripts/probe-tool-library-provider-exposure-e2e.mjs --mode qwen-product-default",
     "probe:tool-library-codex-product-default-e2e": "node --import tsx scripts/probe-tool-library-provider-exposure-e2e.mjs --mode codex-product-default",

@@ -28,6 +28,7 @@ import { getErrorMessage } from '../../../daemon/utils/error.js';
 import {
   resolveSubagentToolSurfaceProfile,
   type ChildRunSnapshot,
+  type ChildRunTerminalSnapshot,
 } from '../../../daemon/subagent-runtime-contracts.js';
 
 const logger = createLogger('run-channel/heartbeat');
@@ -171,13 +172,57 @@ export function nextSocketThreadSeq(
   return current;
 }
 
-function sendActiveChildStatus(
+function isTerminalChildRunSnapshot(
+  child: ChildRunSnapshot,
+): child is ChildRunTerminalSnapshot {
+  return child.status !== 'running' && child.status !== 'approval_pending';
+}
+
+function sendChildRunUpdate(
   socket: WebSocket,
   threadId: ThreadId,
   child: ChildRunSnapshot,
 ): void {
+  if (isTerminalChildRunSnapshot(child)) {
+    sendMessage(socket, {
+      type: 'run.event',
+      runEventCursor: false,
+      event: mapBackgroundSubagentTerminalToRunEvent(
+        child.childRunId,
+        threadId,
+        nextSocketThreadSeq(socket, threadId),
+        {
+          deliveryId: child.deliveryId,
+          parentRunId: child.parentRunId,
+          childRunId: child.childRunId,
+          childThreadId: child.childThreadId,
+          subagentType: child.subagentType,
+          ...(child.capabilities === undefined
+            ? {}
+            : {
+                capabilities: child.capabilities,
+                toolSurface: resolveSubagentToolSurfaceProfile({
+                  subagentType: child.subagentType,
+                  capabilities: child.capabilities,
+                }),
+              }),
+          runtime: child.runtime,
+          terminalState: child.status,
+          ok: child.status === 'completed',
+          ...(child.reason === null ? {} : { reason: child.reason }),
+          result: child.result,
+          completedAt: child.completedAt,
+          modelId: child.modelPin.modelId,
+          reasoningEffort: child.modelPin.providerRunSelection.reasoningEffort,
+        },
+      ),
+    });
+    return;
+  }
+
   sendMessage(socket, {
     type: 'run.event',
+    runEventCursor: false,
     event: mapAgentEventToRunEvent(
       child.parentRunId,
       threadId,
@@ -224,6 +269,7 @@ export function ensureThreadBackgroundSubscription(
       (result) => {
         sendMessage(socket, {
           type: 'run.event',
+          runEventCursor: false,
           event: mapBackgroundSubagentTerminalToRunEvent(
             result.childRunId,
             threadId,
@@ -281,7 +327,7 @@ export function ensureThreadBackgroundSubscription(
     subscriptionContext.childRuns.subscribeActiveChildRunUpdates(
       threadId,
       (child) => {
-        sendActiveChildStatus(socket, threadId, child);
+        sendChildRunUpdate(socket, threadId, child);
       },
     );
 
@@ -290,11 +336,16 @@ export function ensureThreadBackgroundSubscription(
     unsubscribeActiveChildren();
   });
 
-  for (const child of subscriptionContext.childRuns.getActiveChildRunsByOwnerThread(
+  for (const child of subscriptionContext.childRuns.getRetainedChildRunsByOwnerThread(
     threadId,
   )) {
+    if (isTerminalChildRunSnapshot(child)) {
+      sendChildRunUpdate(socket, threadId, child);
+      continue;
+    }
     sendMessage(socket, {
       type: 'run.event',
+      runEventCursor: false,
       event: mapAgentEventToRunEvent(
         child.parentRunId,
         threadId,

@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import test from 'node:test';
 
+import type { PublicHttpReadRuntime } from '../../utils/public-http-read-port.js';
 import { ImageGenerationError } from '../contract.js';
-import { generateVideoViaGrok } from './grok-video-provider.js';
+import {
+  generateVideoViaGrok,
+  type GrokVideoCreateRequest,
+} from './grok-video-provider.js';
 
 // 실 API 형태는 S0 실측(2026-07-13): POST → {request_id}, GET →
 // {status: pending|done|failed|expired, video: {url, duration}, error: {code}}
@@ -14,9 +19,59 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+function createPublicHttpRead(fetchImpl: typeof fetch): PublicHttpReadRuntime {
+  return {
+    async request(input) {
+      const response = await fetchImpl(input.url, {
+        method: input.method,
+        headers: input.headers,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
+      const bytes = Buffer.from(await response.arrayBuffer());
+      return {
+        ok: true,
+        status: response.status,
+        location: response.headers.get('location'),
+        contentType: response.headers.get('content-type'),
+        contentLength: bytes.byteLength,
+        bodyBase64: bytes.toString('base64'),
+      };
+    },
+  };
+}
+
+function createRequestFromFetch(
+  fetchImpl: typeof fetch,
+): GrokVideoCreateRequest {
+  return async (input) => {
+    const response = await fetchImpl(input.requestUrl, {
+      method: 'POST',
+      headers: input.headers,
+      body: input.serializedPayload,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    if (!response.ok) {
+      throw Object.assign(new Error('fixture create request failed'), {
+        status: response.status,
+      });
+    }
+    const body: unknown = await response.json();
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      throw Object.assign(new Error('fixture create response is invalid'), {
+        status: response.status,
+      });
+    }
+    return body as Record<string, unknown>;
+  };
+}
+
 function buildFetchScript(
   responses: Array<{ assertUrl?: (url: string) => void; response: Response }>,
-): { fetchImpl: typeof fetch; calls: string[] } {
+): {
+  fetchImpl: typeof fetch;
+  publicHttpRead: PublicHttpReadRuntime;
+  calls: string[];
+} {
   const calls: string[] = [];
   const queue = [...responses];
   const fetchImpl: typeof fetch = (input, init) => {
@@ -29,7 +84,18 @@ function buildFetchScript(
     next.assertUrl?.(url);
     return Promise.resolve(next.response);
   };
-  return { fetchImpl, calls };
+  const publicHttpRead = createPublicHttpRead(fetchImpl);
+  return { fetchImpl, publicHttpRead, calls };
+}
+
+function fetchScriptInput(script: ReturnType<typeof buildFetchScript>): {
+  createRequestImpl: GrokVideoCreateRequest;
+  publicHttpRead: PublicHttpReadRuntime;
+} {
+  return {
+    createRequestImpl: createRequestFromFetch(script.fetchImpl),
+    publicHttpRead: script.publicHttpRead,
+  };
 }
 
 const BASE_INPUT = {
@@ -56,14 +122,16 @@ void test('generateVideoViaGrok posts the job, polls to done, and returns the vi
       }),
     },
   ]);
-  const fetchImpl: typeof fetch = (input, init) => {
-    if (init?.method === 'POST') {
-      createBody = JSON.parse(String(init.body));
-    }
-    return script.fetchImpl(input, init);
-  };
+  const createRequestImpl = createRequestFromFetch(script.fetchImpl);
 
-  const result = await generateVideoViaGrok({ ...BASE_INPUT, fetchImpl });
+  const result = await generateVideoViaGrok({
+    ...BASE_INPUT,
+    createRequestImpl: async (request) => {
+      createBody = JSON.parse(request.serializedPayload);
+      return createRequestImpl(request);
+    },
+    publicHttpRead: script.publicHttpRead,
+  });
   assert.equal(result.videoUrl, 'https://signed.example/video.mp4');
   assert.equal(result.durationSeconds, 5);
   assert.equal(result.model, 'grok-imagine-video-1.5');
@@ -90,7 +158,7 @@ void test('generateVideoViaGrok can delegate only the billable create request to
 
   const result = await generateVideoViaGrok({
     ...BASE_INPUT,
-    fetchImpl: poll.fetchImpl,
+    publicHttpRead: poll.publicHttpRead,
     createRequestImpl: async (request) => {
       assert.equal(request.headers.get('Accept'), 'application/json');
       assert.equal(request.headers.get('Authorization'), 'Bearer token');
@@ -126,7 +194,8 @@ void test('generateVideoViaGrok persists a new request id before polling and rep
   };
   await generateVideoViaGrok({
     ...BASE_INPUT,
-    fetchImpl: firstFetch,
+    createRequestImpl: createRequestFromFetch(firstFetch),
+    publicHttpRead: createPublicHttpRead(firstFetch),
     onRequestCreated: async (requestId) => {
       events.push(`persist:${requestId}`);
     },
@@ -149,11 +218,30 @@ void test('generateVideoViaGrok persists a new request id before polling and rep
   await generateVideoViaGrok({
     ...BASE_INPUT,
     requestId: 'req-durable',
-    fetchImpl: replacement.fetchImpl,
+    publicHttpRead: replacement.publicHttpRead,
   });
   assert.deepEqual(replacement.calls, [
     'GET https://api.x.ai/v1/videos/req-durable',
   ]);
+});
+
+void test('generateVideoViaGrok fails closed when the poll owner is unavailable', async () => {
+  let createRequests = 0;
+  await assert.rejects(
+    generateVideoViaGrok({
+      ...BASE_INPUT,
+      requestId: 'req-durable',
+      createRequestImpl: async () => {
+        createRequests += 1;
+        throw new Error('create owner must not run');
+      },
+    }),
+    (error: unknown) =>
+      error instanceof ImageGenerationError &&
+      error.reasonCode === 'provider_network_failed' &&
+      /owner is unavailable/u.test(error.message),
+  );
+  assert.equal(createRequests, 0);
 });
 
 void test('generateVideoViaGrok classifies auth, rate-limit, failed, and expired outcomes', async () => {
@@ -161,9 +249,9 @@ void test('generateVideoViaGrok classifies auth, rate-limit, failed, and expired
   await assert.rejects(
     generateVideoViaGrok({
       ...BASE_INPUT,
-      fetchImpl: buildFetchScript([
-        { response: jsonResponse(401, { error: 'nope' }) },
-      ]).fetchImpl,
+      ...fetchScriptInput(
+        buildFetchScript([{ response: jsonResponse(401, { error: 'nope' }) }]),
+      ),
     }),
     (error: unknown) =>
       error instanceof ImageGenerationError &&
@@ -174,9 +262,11 @@ void test('generateVideoViaGrok classifies auth, rate-limit, failed, and expired
   await assert.rejects(
     generateVideoViaGrok({
       ...BASE_INPUT,
-      fetchImpl: buildFetchScript([
-        { response: jsonResponse(429, { error: 'slow down' }) },
-      ]).fetchImpl,
+      ...fetchScriptInput(
+        buildFetchScript([
+          { response: jsonResponse(429, { error: 'slow down' }) },
+        ]),
+      ),
     }),
     (error: unknown) =>
       error instanceof ImageGenerationError &&
@@ -187,15 +277,17 @@ void test('generateVideoViaGrok classifies auth, rate-limit, failed, and expired
   await assert.rejects(
     generateVideoViaGrok({
       ...BASE_INPUT,
-      fetchImpl: buildFetchScript([
-        { response: jsonResponse(200, { request_id: 'req-2' }) },
-        {
-          response: jsonResponse(200, {
-            status: 'failed',
-            error: { code: 'moderation', message: 'blocked' },
-          }),
-        },
-      ]).fetchImpl,
+      ...fetchScriptInput(
+        buildFetchScript([
+          { response: jsonResponse(200, { request_id: 'req-2' }) },
+          {
+            response: jsonResponse(200, {
+              status: 'failed',
+              error: { code: 'moderation', message: 'blocked' },
+            }),
+          },
+        ]),
+      ),
     }),
     (error: unknown) =>
       error instanceof ImageGenerationError &&
@@ -207,10 +299,12 @@ void test('generateVideoViaGrok classifies auth, rate-limit, failed, and expired
   await assert.rejects(
     generateVideoViaGrok({
       ...BASE_INPUT,
-      fetchImpl: buildFetchScript([
-        { response: jsonResponse(200, { request_id: 'req-3' }) },
-        { response: jsonResponse(200, { status: 'expired' }) },
-      ]).fetchImpl,
+      ...fetchScriptInput(
+        buildFetchScript([
+          { response: jsonResponse(200, { request_id: 'req-3' }) },
+          { response: jsonResponse(200, { status: 'expired' }) },
+        ]),
+      ),
     }),
     (error: unknown) =>
       error instanceof ImageGenerationError &&
@@ -222,14 +316,16 @@ void test('generateVideoViaGrok reports structured unknown statuses without obje
   await assert.rejects(
     generateVideoViaGrok({
       ...BASE_INPUT,
-      fetchImpl: buildFetchScript([
-        { response: jsonResponse(200, { request_id: 'req-unknown-status' }) },
-        {
-          response: jsonResponse(200, {
-            status: { state: 'queued' },
-          }),
-        },
-      ]).fetchImpl,
+      ...fetchScriptInput(
+        buildFetchScript([
+          { response: jsonResponse(200, { request_id: 'req-unknown-status' }) },
+          {
+            response: jsonResponse(200, {
+              status: { state: 'queued' },
+            }),
+          },
+        ]),
+      ),
     }),
     (error: unknown) => {
       assert.ok(error instanceof ImageGenerationError);
@@ -242,21 +338,31 @@ void test('generateVideoViaGrok reports structured unknown statuses without obje
 });
 
 void test('generateVideoViaGrok stops at the poll ceiling with a timeout classification', async () => {
-  const pendingForever: typeof fetch = (input, init) =>
-    Promise.resolve(
-      init?.method === 'POST'
-        ? jsonResponse(200, { request_id: 'req-4' })
-        : jsonResponse(200, { status: 'pending' }),
-    );
+  let nowMs = 0;
+  const script = buildFetchScript([
+    { response: jsonResponse(200, { request_id: 'req-4' }) },
+    ...Array.from({ length: 100 }, () => ({
+      response: jsonResponse(200, { status: 'pending' }),
+    })),
+  ]);
   await assert.rejects(
     generateVideoViaGrok({
       ...BASE_INPUT,
-      fetchImpl: pendingForever,
+      ...fetchScriptInput(script),
+      now: () => nowMs,
+      sleepImpl: async (ms) => {
+        nowMs += ms;
+      },
       pollTimeoutMs: 10,
       pollIntervalMs: 1,
     }),
     (error: unknown) =>
       error instanceof ImageGenerationError &&
       error.reasonCode === 'provider_request_timeout',
+  );
+  assert.equal(nowMs, 10);
+  assert.equal(
+    script.calls.filter((call) => call.startsWith('GET ')).length,
+    9,
   );
 });

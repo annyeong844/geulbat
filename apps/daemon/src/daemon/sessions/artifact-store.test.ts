@@ -122,6 +122,32 @@ void test('commitThreadArtifactUpdateVersion appends the next version with linea
     artifactId: created.artifact.artifactId,
     version: 2,
   });
+  const replayed = await commitThreadArtifactUpdateVersion({
+    workspaceRoot,
+    threadId,
+    artifactId: created.artifact.artifactId,
+    baseVersion: 1,
+    payload: '# v2 (사용자 draft 커밋)',
+    createdByRunId: 'user-edit-1',
+    timestamp: '2026-07-17T00:01:00.000Z',
+  });
+  assert.deepEqual(replayed, updated);
+  assert.deepEqual(
+    await commitThreadArtifactUpdateVersion({
+      workspaceRoot,
+      threadId,
+      artifactId: created.artifact.artifactId,
+      baseVersion: 1,
+      payload: '# divergent v2',
+      createdByRunId: 'user-edit-1',
+      timestamp: '2026-07-17T00:01:00.000Z',
+    }),
+    {
+      ok: false,
+      reason: 'version_conflict',
+      latestVersion: 2,
+    },
+  );
 
   const persisted = await loadAllThreadArtifactVersions(
     workspaceRoot,

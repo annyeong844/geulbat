@@ -85,6 +85,47 @@ void test('web_search no longer reads or forwards a separate search API key', as
   assert.doesNotMatch(result.output, /api.?key|subscription-token/iu);
 });
 
+void test('web_search routes DuckDuckGo through the public HTTP host runtime', async () => {
+  let observed:
+    | {
+        url: string;
+        method: string;
+        responseBodyMode: string;
+        bodyBase64?: string;
+      }
+    | undefined;
+  const tool = createWebSearchTool({
+    publicHttpRead: {
+      request: async (args) => {
+        observed = args;
+        const body = duckDuckGoHtmlResult();
+        return {
+          ok: true,
+          status: 200,
+          location: null,
+          contentType: 'text/html',
+          contentLength: body.byteLength,
+          bodyBase64: body.toString('base64'),
+        };
+      },
+    },
+  });
+
+  const result = await tool.execute(
+    { query: 'durable agent run' },
+    { callId: 'call-web-search-host-routed' },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(observed?.url, 'https://html.duckduckgo.com/html/');
+  assert.equal(observed?.method, 'POST');
+  assert.equal(observed?.responseBodyMode, 'full');
+  assert.equal(
+    Buffer.from(observed?.bodyBase64 ?? '', 'base64').toString('utf8'),
+    'q=durable+agent+run',
+  );
+});
+
 void test('searchWeb uses the existing Codex OAuth runtime and returns cited source cards', async () => {
   let observed:
     | {
@@ -290,14 +331,13 @@ void test('searchWeb parses keyless HTML cards and filters unsafe result URLs', 
   ]);
 });
 
-void test('searchWeb applies the shared public-network DNS guard to keyless fallback', async () => {
+void test('searchWeb fails closed when its host-routed fallback is unavailable', async () => {
   const result = await searchWeb({
     query: 'query',
-    lookup: async () => [{ address: '127.0.0.1', family: 4 }],
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.reasonCode, 'network_error');
+  assert.equal(result.reasonCode, 'provider_error');
   assert.deepEqual(
     result.attempts.map((attempt) => ({
       provider: attempt.provider,
@@ -312,13 +352,8 @@ void test('searchWeb applies the shared public-network DNS guard to keyless fall
       },
       {
         provider: 'duckduckgo',
-        endpoint: 'html',
-        reasonCode: 'network_error',
-      },
-      {
-        provider: 'duckduckgo',
-        endpoint: 'lite',
-        reasonCode: 'network_error',
+        endpoint: undefined,
+        reasonCode: 'provider_error',
       },
     ],
   );

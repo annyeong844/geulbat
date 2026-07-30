@@ -110,7 +110,16 @@ export async function withDaemonServer<T>(
     try {
       await closeServer(server);
     } finally {
-      await daemonContext.provider.authCallbackServer.close();
+      try {
+        await daemonContext.provider.authCallbackServer.close();
+      } finally {
+        const hostCommandCleanup = await daemonContext.hostCommands.closeAll();
+        if (!hostCommandCleanup.ok) {
+          throw new Error(
+            `route test host command cleanup failed: ${hostCommandCleanup.reasonCode}`,
+          );
+        }
+      }
     }
   }
 }

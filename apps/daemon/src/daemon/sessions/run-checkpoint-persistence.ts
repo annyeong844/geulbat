@@ -53,26 +53,46 @@ import {
   type ApprovedPlanRef,
 } from '@geulbat/protocol/planning-workflow';
 import {
+  isModelSettlementIdentity,
+  type ModelSettlementIdentity,
+} from '@geulbat/protocol/thread-metadata';
+import {
   validateToolCapabilityPolicy,
   type ToolCapabilityPolicy,
 } from '@geulbat/tool-library/tool-capability-policy';
 import type { ToolLibraryProjectionIdentity } from '@geulbat/tool-library/projection-codec';
-import { isJsonValue, isRecord } from '../runtime-json.js';
+import { isJsonValue, isRecord, type JsonValue } from '../runtime-json.js';
 
 import {
+  isToolRecoveryStrategy,
   parseExecuteResult,
   type RunCheckpointToolInvocation,
   type TerminalAgentEvent,
-  type ToolRecoveryStrategy,
 } from '../runtime-contracts.js';
 import type { PendingInterject } from './active-run-interject-buffer.js';
 import type { RunCheckpointEvent } from './run-event-journal.js';
 
 export const RUN_CHECKPOINT_SCHEMA_VERSION = 1;
+export const RUN_CHECKPOINT_MODEL_SETTLEMENT_SOURCES = [
+  'aborted',
+  'blocked',
+  'model_failure',
+  'no_progress',
+  'structured_output_failure',
+  'structured_output',
+  'structured_output_unhandled',
+  'natural',
+  'tool_completion',
+  'tool_failure',
+  'verification_unavailable',
+] as const;
+export type RunCheckpointModelSettlementSource =
+  (typeof RUN_CHECKPOINT_MODEL_SETTLEMENT_SOURCES)[number];
 const SHA256_ID_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
 
 export interface RecoverableRunRequest {
-  workingDirectory: string;
+  workingDirectory?: string;
   permissionMode: PermissionMode;
   planningWorkflow?: {
     workflowId: string;
@@ -142,6 +162,62 @@ export interface RunCheckpointTerminalSnapshot {
   event: RunCheckpointTerminalEvent;
   eventCursor: number;
   acknowledged: boolean;
+  modelSettlementIdentity?: ModelSettlementIdentity;
+}
+
+export type RunCheckpointModelRoundPhase =
+  | 'prepared'
+  | 'streaming'
+  | 'terminal_observed';
+
+export interface RunCheckpointModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+}
+
+export interface RunCheckpointModelRoundSettlement {
+  candidateDigest: `sha256:${string}`;
+  usage: RunCheckpointModelUsage;
+  phase: 'candidate_recorded' | 'effects_started' | 'committed';
+  resultDigest: `sha256:${string}` | null;
+  result: JsonValue | null;
+  disposition: 'continue' | 'terminal' | null;
+  source: RunCheckpointModelSettlementSource | null;
+  committedAt: string | null;
+  continuationHistoryText: string | null;
+}
+
+export interface RunCheckpointModelRoundContinuation {
+  round: number;
+  logicalRequestIdentity: ModelSettlementIdentity;
+  historyText: string;
+}
+
+export interface RunCheckpointActiveModelRound {
+  round: number;
+  claimId: string;
+  claimRevision: number;
+  modelRoundAttempt: number;
+  providerRequestAttempt: number;
+  providerId: RunProviderId;
+  model: string;
+  transportKind: 'websocket' | 'http_json_sse';
+  providerRequestIdentity: string;
+  contextDigest: `sha256:${string}`;
+  toolLibraryProjectionIdentity: ToolLibraryProjectionIdentity;
+  responseFormat: null;
+  providerReplayScopeId: `sha256:${string}` | null;
+  phase: RunCheckpointModelRoundPhase;
+  logicalRequestIdentity: ModelSettlementIdentity | null;
+  settlement: RunCheckpointModelRoundSettlement | null;
+}
+
+export interface RunCheckpointModelRoundState {
+  nextRound: number;
+  active: RunCheckpointActiveModelRound | null;
+  settledUsage: RunCheckpointModelUsage;
+  continuation: RunCheckpointModelRoundContinuation | null;
 }
 
 export interface RunCheckpoint {
@@ -157,6 +233,7 @@ export interface RunCheckpoint {
   approvals: RunCheckpointApproval[];
   toolInvocations: RunCheckpointToolInvocation[];
   toolResultsReady: RunCheckpointToolResultReady[];
+  modelRoundState: RunCheckpointModelRoundState | null;
   eventHistory: RunCheckpointEvent[];
   terminal: RunCheckpointTerminalSnapshot | null;
   createdAt: string;
@@ -201,6 +278,10 @@ export function parseRunCheckpoint(value: unknown): RunCheckpoint {
     value.toolResultsReady === undefined
       ? []
       : parseCheckpointToolResultsReady(value.toolResultsReady);
+  const modelRoundState =
+    value.modelRoundState === undefined || value.modelRoundState === null
+      ? null
+      : parseCheckpointModelRoundState(value.modelRoundState);
   const terminal =
     value.terminal === undefined || value.terminal === null
       ? null
@@ -244,11 +325,248 @@ export function parseRunCheckpoint(value: unknown): RunCheckpoint {
     approvals,
     toolInvocations,
     toolResultsReady,
+    modelRoundState,
     eventHistory: [],
     terminal,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };
+}
+
+function parseCheckpointModelRoundState(
+  value: unknown,
+): RunCheckpointModelRoundState {
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.nextRound) ||
+    typeof value.nextRound !== 'number' ||
+    value.nextRound < 0
+  ) {
+    throw new Error('invalid run checkpoint model round state');
+  }
+  const active =
+    value.active === null
+      ? null
+      : parseCheckpointActiveModelRound(value.active);
+  if (active !== null && active.round !== value.nextRound) {
+    throw new Error('active model round does not match the durable cursor');
+  }
+  const continuation =
+    value.continuation === undefined || value.continuation === null
+      ? null
+      : parseCheckpointModelRoundContinuation(value.continuation);
+  if (continuation !== null && continuation.round + 1 !== value.nextRound) {
+    throw new Error(
+      'model round continuation does not precede the durable cursor',
+    );
+  }
+  return {
+    nextRound: value.nextRound,
+    active,
+    settledUsage:
+      value.settledUsage === undefined
+        ? createEmptyCheckpointModelUsage()
+        : parseCheckpointModelUsage(value.settledUsage),
+    continuation,
+  };
+}
+
+function parseCheckpointModelRoundContinuation(
+  value: unknown,
+): RunCheckpointModelRoundContinuation {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeSafeInteger(value.round) ||
+    !isModelSettlementIdentity(value.logicalRequestIdentity) ||
+    typeof value.historyText !== 'string'
+  ) {
+    throw new Error('invalid model round continuation');
+  }
+  return {
+    round: value.round,
+    logicalRequestIdentity: value.logicalRequestIdentity,
+    historyText: value.historyText,
+  };
+}
+
+function parseCheckpointActiveModelRound(
+  value: unknown,
+): RunCheckpointActiveModelRound {
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.round) ||
+    typeof value.round !== 'number' ||
+    value.round < 0 ||
+    typeof value.claimId !== 'string' ||
+    value.claimId.trim() === '' ||
+    !Number.isSafeInteger(value.claimRevision) ||
+    typeof value.claimRevision !== 'number' ||
+    value.claimRevision < 1 ||
+    !Number.isSafeInteger(value.modelRoundAttempt) ||
+    typeof value.modelRoundAttempt !== 'number' ||
+    value.modelRoundAttempt < 0 ||
+    !Number.isSafeInteger(value.providerRequestAttempt) ||
+    typeof value.providerRequestAttempt !== 'number' ||
+    value.providerRequestAttempt < 0 ||
+    !isRunProviderId(value.providerId) ||
+    typeof value.model !== 'string' ||
+    value.model.trim() === '' ||
+    (value.transportKind !== 'websocket' &&
+      value.transportKind !== 'http_json_sse') ||
+    typeof value.providerRequestIdentity !== 'string' ||
+    !SHA256_HEX_PATTERN.test(value.providerRequestIdentity) ||
+    typeof value.contextDigest !== 'string' ||
+    !isSha256Id(value.contextDigest) ||
+    value.responseFormat !== null ||
+    (value.providerReplayScopeId !== null &&
+      (typeof value.providerReplayScopeId !== 'string' ||
+        !isSha256Id(value.providerReplayScopeId))) ||
+    (value.phase !== 'prepared' &&
+      value.phase !== 'streaming' &&
+      value.phase !== 'terminal_observed')
+  ) {
+    throw new Error('invalid active model round checkpoint');
+  }
+  const toolLibraryProjectionIdentity =
+    parseCheckpointToolLibraryProjectionIdentity(
+      value.toolLibraryProjectionIdentity,
+    );
+  if (toolLibraryProjectionIdentity === undefined) {
+    throw new Error('active model round requires a tool projection identity');
+  }
+  const logicalRequestIdentity =
+    value.logicalRequestIdentity === undefined ||
+    value.logicalRequestIdentity === null
+      ? null
+      : isModelSettlementIdentity(value.logicalRequestIdentity)
+        ? value.logicalRequestIdentity
+        : undefined;
+  if (logicalRequestIdentity === undefined) {
+    throw new Error('invalid active model round logical request identity');
+  }
+  const settlement =
+    value.settlement === undefined || value.settlement === null
+      ? null
+      : parseCheckpointModelRoundSettlement(value.settlement);
+  if (settlement !== null && logicalRequestIdentity === null) {
+    throw new Error('model round settlement requires a logical identity');
+  }
+  return {
+    round: value.round,
+    claimId: value.claimId,
+    claimRevision: value.claimRevision,
+    modelRoundAttempt: value.modelRoundAttempt,
+    providerRequestAttempt: value.providerRequestAttempt,
+    providerId: value.providerId,
+    model: value.model,
+    transportKind: value.transportKind,
+    providerRequestIdentity: value.providerRequestIdentity,
+    contextDigest: value.contextDigest,
+    toolLibraryProjectionIdentity,
+    responseFormat: null,
+    providerReplayScopeId: value.providerReplayScopeId,
+    phase: value.phase,
+    logicalRequestIdentity,
+    settlement,
+  };
+}
+
+function parseCheckpointModelRoundSettlement(
+  value: unknown,
+): RunCheckpointModelRoundSettlement {
+  if (
+    !isRecord(value) ||
+    typeof value.candidateDigest !== 'string' ||
+    !isSha256Id(value.candidateDigest) ||
+    (value.phase !== 'candidate_recorded' &&
+      value.phase !== 'effects_started' &&
+      value.phase !== 'committed')
+  ) {
+    throw new Error('invalid model round settlement');
+  }
+  const usage = parseCheckpointModelUsage(value.usage);
+  if (value.phase !== 'committed') {
+    if (
+      value.resultDigest !== null ||
+      value.result !== null ||
+      value.disposition !== null ||
+      value.source !== null ||
+      value.continuationHistoryText !== null
+    ) {
+      throw new Error('uncommitted model round settlement contains a result');
+    }
+    return {
+      candidateDigest: value.candidateDigest,
+      usage,
+      phase: value.phase,
+      resultDigest: null,
+      result: null,
+      disposition: null,
+      source: null,
+      committedAt: null,
+      continuationHistoryText: null,
+    };
+  }
+  if (
+    typeof value.resultDigest !== 'string' ||
+    !isSha256Id(value.resultDigest) ||
+    !isJsonValue(value.result) ||
+    (value.disposition !== 'continue' && value.disposition !== 'terminal') ||
+    !isRunCheckpointModelSettlementSource(value.source) ||
+    typeof value.committedAt !== 'string' ||
+    !isCanonicalTimestamp(value.committedAt) ||
+    (value.continuationHistoryText !== null &&
+      typeof value.continuationHistoryText !== 'string') ||
+    (value.disposition === 'terminal' && value.continuationHistoryText !== null)
+  ) {
+    throw new Error('invalid committed model round settlement');
+  }
+  return {
+    candidateDigest: value.candidateDigest,
+    usage,
+    phase: 'committed',
+    resultDigest: value.resultDigest,
+    result: value.result,
+    disposition: value.disposition,
+    source: value.source,
+    committedAt: value.committedAt,
+    continuationHistoryText: value.continuationHistoryText,
+  };
+}
+
+function parseCheckpointModelUsage(value: unknown): RunCheckpointModelUsage {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeSafeInteger(value.inputTokens) ||
+    !isNonNegativeSafeInteger(value.outputTokens) ||
+    !isNonNegativeSafeInteger(value.cachedInputTokens)
+  ) {
+    throw new Error('invalid run checkpoint model usage');
+  }
+  return {
+    inputTokens: value.inputTokens,
+    outputTokens: value.outputTokens,
+    cachedInputTokens: value.cachedInputTokens,
+  };
+}
+
+function createEmptyCheckpointModelUsage(): RunCheckpointModelUsage {
+  return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+export function isRunCheckpointModelSettlementSource(
+  value: unknown,
+): value is RunCheckpointModelSettlementSource {
+  return (
+    typeof value === 'string' &&
+    (RUN_CHECKPOINT_MODEL_SETTLEMENT_SOURCES as readonly string[]).includes(
+      value,
+    )
+  );
 }
 
 function parseRunCheckpointTerminalSnapshot(
@@ -265,6 +583,15 @@ function parseRunCheckpointTerminalSnapshot(
   ) {
     throw new Error('invalid run checkpoint terminal snapshot');
   }
+  const modelSettlementIdentity =
+    value.modelSettlementIdentity === undefined
+      ? undefined
+      : isModelSettlementIdentity(value.modelSettlementIdentity)
+        ? value.modelSettlementIdentity
+        : null;
+  if (modelSettlementIdentity === null) {
+    throw new Error('invalid terminal model settlement identity');
+  }
   if (
     value.event.type === 'done' &&
     typeof value.event.payload.answer === 'string' &&
@@ -273,6 +600,9 @@ function parseRunCheckpointTerminalSnapshot(
     return {
       eventCursor: value.eventCursor,
       acknowledged: value.acknowledged,
+      ...(modelSettlementIdentity === undefined
+        ? {}
+        : { modelSettlementIdentity }),
       event: {
         type: 'done',
         payload: {
@@ -289,6 +619,9 @@ function parseRunCheckpointTerminalSnapshot(
     return {
       eventCursor: value.eventCursor,
       acknowledged: value.acknowledged,
+      ...(modelSettlementIdentity === undefined
+        ? {}
+        : { modelSettlementIdentity }),
       event: {
         type: 'error',
         payload: value.event.payload,
@@ -474,20 +807,11 @@ function parseCheckpointToolResultReady(
   };
 }
 
-function isToolRecoveryStrategy(value: unknown): value is ToolRecoveryStrategy {
-  return (
-    value === 'replay_safe' ||
-    value === 'idempotency_key' ||
-    value === 'reconcile_then_replay' ||
-    value === 'durable_handle' ||
-    value === 'at_least_once'
-  );
-}
-
 function parseRecoverableRunRequest(value: unknown): RecoverableRunRequest {
   if (
     !isRecord(value) ||
-    typeof value.workingDirectory !== 'string' ||
+    (value.workingDirectory !== undefined &&
+      typeof value.workingDirectory !== 'string') ||
     !isPermissionMode(value.permissionMode)
   ) {
     throw new Error('invalid recoverable run request');
@@ -543,7 +867,9 @@ function parseRecoverableRunRequest(value: unknown): RecoverableRunRequest {
     );
   }
   return {
-    workingDirectory: value.workingDirectory,
+    ...(value.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: value.workingDirectory }),
     permissionMode: value.permissionMode,
     ...(planningWorkflow === undefined ? {} : { planningWorkflow }),
     ...(value.approvedPlanRef === undefined

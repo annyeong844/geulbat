@@ -531,6 +531,116 @@ void test('generateImageArtifact replacement replays one durable grok response w
   }
 });
 
+void test('generateImageArtifact replacement replays one durable codex response without a second provider request', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-image-durable-codex-'),
+  );
+  const input = {
+    ...baseInput(),
+    stateRoot,
+    runId: 'run-image-durable-codex',
+  };
+  const identity = createMediaGenerationRecoveryIdentity({
+    kind: 'image',
+    threadId: THREAD_ID,
+    runId: input.runId,
+    callId: 'call-image-durable-codex',
+    toolArgs: { prompt: 'a cat' },
+  });
+  const recovery = {
+    callId: 'call-image-durable-codex',
+    identity,
+  };
+  const pngBase64 = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from('durable-codex-image'),
+  ]).toString('base64');
+  let providerDispatches = 0;
+  let durableSubscriptions = 0;
+  let admittedPayload: string | undefined;
+  const providerWebSocketSessions: ImageGenerationRuntimeDeps['providerWebSocketSessions'] =
+    {
+      acquireWebSocket: () => {
+        throw new Error('not used');
+      },
+      streamDurableResponseEvents: async function* (request) {
+        durableSubscriptions += 1;
+        assert.equal(
+          request.providerSessionId,
+          `media:image:${THREAD_ID}:${identity.operationId}`,
+        );
+        assert.equal(request.requestAttempt, 0);
+        if (admittedPayload === undefined) {
+          admittedPayload = request.serializedPayload;
+          providerDispatches += 1;
+        } else {
+          assert.equal(request.serializedPayload, admittedPayload);
+        }
+        yield {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            id: 'image_1',
+            type: 'image_generation_call',
+            status: 'completed',
+            result: pngBase64,
+          },
+        };
+        yield { type: 'response.completed', response: { usage: {} } };
+      },
+    };
+
+  try {
+    const firstDeps = buildDeps({
+      providerWebSocketSessions,
+      writeThreadMediaFileImpl: async () => {
+        throw new Error(
+          'simulated daemon death before image candidate persistence',
+        );
+      },
+    }).deps;
+    delete firstDeps.generateViaCodexImpl;
+    const first = createImageGenerationRuntime(firstDeps);
+    await assert.rejects(
+      first.generateImageArtifact({ ...input, recovery }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'artifact_commit_failed',
+    );
+    assert.equal(providerDispatches, 1);
+
+    const replacementDeps = buildDeps({
+      providerWebSocketSessions,
+      writeThreadMediaFileImpl: writeThreadMediaFile,
+      statThreadMediaFileImpl: statThreadMediaFile,
+    }).deps;
+    delete replacementDeps.generateViaCodexImpl;
+    const replacement = createImageGenerationRuntime(replacementDeps);
+    await assert.rejects(
+      replacement.generateImageArtifact({
+        ...input,
+        request: { prompt: 'a changed cat' },
+        recovery,
+      }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'provider_outcome_unknown',
+    );
+    assert.equal(providerDispatches, 1);
+    assert.equal(durableSubscriptions, 1);
+
+    const recovered = await replacement.generateImageArtifact({
+      ...input,
+      recovery,
+    });
+    assert.equal(providerDispatches, 1);
+    assert.equal(durableSubscriptions, 2);
+    assert.equal(recovered.provenance.providerId, 'openai_codex_direct');
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('generateImageArtifact does not mark a provider effect before local auth succeeds', async () => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-image-recovery-auth-'),

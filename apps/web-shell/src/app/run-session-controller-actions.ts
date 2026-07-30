@@ -38,6 +38,7 @@ import {
   type FrameToolClient,
   type InterjectRunClient,
   type PromptActionInputs,
+  type ProviderRequestRecoveryClient,
   type RunToolFailure,
 } from './run-session-controller-action-fns.js';
 
@@ -64,6 +65,8 @@ interface RunSessionControllerActionsArgs {
   cancelClient: CancelRunCommandClient & ChildRunCancelClient;
   interjectClient: InterjectRunClient;
   frameToolClient: FrameToolClient;
+  providerRequestRecoveryClient: ProviderRequestRecoveryClient;
+  providerRequestOutcomeUnknownRecoveryRequired: boolean;
   dispatch: (action: RunSessionStateAction) => void;
   appendOptimisticUserMessage: (
     prompt: string,
@@ -85,6 +88,8 @@ export function useRunSessionControllerActions({
   cancelClient,
   interjectClient,
   frameToolClient,
+  providerRequestRecoveryClient,
+  providerRequestOutcomeUnknownRecoveryRequired,
   dispatch,
   appendOptimisticUserMessage,
   trimMessagesForRegenerate,
@@ -352,11 +357,16 @@ export function useRunSessionControllerActions({
           trimMessagesForRegenerate,
           appendOptimisticUserMessage,
           logCommandFailure,
+          ...(providerRequestOutcomeUnknownRecoveryRequired
+            ? { providerRequestRecoveryClient }
+            : {}),
           prepareStartRequest,
         });
         if (started && inputs.providerTransitionRecovery !== undefined) {
           onProviderTransitionRecoveryStarted?.();
         }
+      } catch (error: unknown) {
+        reportSessionFailure('provider request recovery failed', error);
       } finally {
         startRequestInFlightRef.current = false;
       }
@@ -370,6 +380,9 @@ export function useRunSessionControllerActions({
       prepareStartRequest,
       trimMessagesForRegenerate,
       onProviderTransitionRecoveryStarted,
+      providerRequestOutcomeUnknownRecoveryRequired,
+      providerRequestRecoveryClient,
+      reportSessionFailure,
     ],
   );
 

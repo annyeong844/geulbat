@@ -223,8 +223,8 @@ export function createPtcExecuteCodeCellReadoptionLedger(
       const diagnostics: Record<string, string | number | boolean> = {};
 
       let sessionAdopted = false;
-      const adoptExisting = stateRuntime.sessionManager.adoptExisting;
-      if (adoptExisting === undefined) {
+      const sessionManager = stateRuntime.sessionManager;
+      if (sessionManager.adoptExisting === undefined) {
         return {
           ok: false,
           reasonCode: 'ptc_execute_code_session_cleanup_failed',
@@ -233,9 +233,12 @@ export function createPtcExecuteCodeCellReadoptionLedger(
         };
       }
       const sessionIdentity = sessionIdentityFromCoordinate(coordinate);
-      const adoptedSession = await adoptExisting(sessionIdentity, {
-        containerId: coordinate.containerId,
-      });
+      const adoptedSession = await sessionManager.adoptExisting(
+        sessionIdentity,
+        {
+          containerId: coordinate.containerId,
+        },
+      );
       if (adoptedSession.ok) {
         sessionAdopted = true;
       } else {

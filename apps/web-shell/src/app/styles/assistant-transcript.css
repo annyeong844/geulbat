@@ -882,6 +882,31 @@
   background: var(--surface-container-high);
 }
 
+.provider-outcome-unknown {
+  display: grid;
+  gap: 7px;
+  margin: 10px 12px;
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning, #b7791f) 42%, transparent);
+  border-radius: 12px;
+  background: color-mix(
+    in srgb,
+    var(--warning, #b7791f) 8%,
+    var(--surface-raised)
+  );
+  color: var(--text-primary);
+}
+
+.provider-outcome-unknown strong {
+  font-size: 13px;
+}
+
+.provider-outcome-unknown span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .transcript-history-button:disabled {
   cursor: wait;
   opacity: 0.7;

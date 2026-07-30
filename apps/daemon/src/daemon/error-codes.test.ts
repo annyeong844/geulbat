@@ -54,6 +54,7 @@ const CASES = {
   llm_context_length_exceeded: 400,
   llm_output_budget_exceeded: 400,
   llm_replay_state_rejected: 400,
+  llm_provider_request_outcome_unknown: 409,
   provider_transition_required: 409,
   provider_transition_preparation_failed: 422,
   invalid_path: 400,

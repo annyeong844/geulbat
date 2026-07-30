@@ -80,7 +80,9 @@ export function buildAgentToolExecutionContextBase(args: {
     signal: args.signal,
     runSignal: args.signal,
     stateRoot: args.runContext.stateRoot,
-    workingDirectory: args.runContext.workingDirectory,
+    ...(args.runContext.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: args.runContext.workingDirectory }),
     ...(args.computerFileRoot === undefined
       ? {}
       : { computerFileRoot: args.computerFileRoot }),
@@ -151,7 +153,9 @@ function buildRunContextFromExecutionBase(
 ): RunContext {
   return {
     stateRoot: executionContextBase.stateRoot,
-    workingDirectory: executionContextBase.workingDirectory,
+    ...(executionContextBase.workingDirectory === undefined
+      ? {}
+      : { workingDirectory: executionContextBase.workingDirectory }),
     threadId: executionContextBase.threadId,
   };
 }

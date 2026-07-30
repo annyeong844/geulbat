@@ -5,11 +5,41 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 
+import { AGENT_LOOP_TERMINAL_SOURCES } from '@geulbat/agent-loop/kernel';
 import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
 import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 
+import { RUN_CHECKPOINT_MODEL_SETTLEMENT_SOURCES } from './run-checkpoint-persistence.js';
 import { createRunCheckpointStore } from './run-checkpoint-store.js';
+
+void test('model settlement persistence accepts every kernel terminal source', () => {
+  assert.deepEqual(
+    RUN_CHECKPOINT_MODEL_SETTLEMENT_SOURCES,
+    AGENT_LOOP_TERMINAL_SOURCES,
+  );
+});
+
+void test('run checkpoints preserve a cwd-free chat run', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-chat-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const store = createRunCheckpointStore({ stateRoot });
+
+  const started = await store.startRun({
+    runId,
+    threadId,
+    request: { permissionMode: 'basic' },
+  });
+
+  assert.equal(started.ok, true);
+  assert.deepEqual(
+    (await createRunCheckpointStore({ stateRoot }).readThread(threadId))
+      ?.request,
+    { permissionMode: 'basic' },
+  );
+});
 
 void test('a torn journal isolates its own thread instead of blocking every running run', async (t) => {
   // 데몬이 저널에 한 줄을 append하다 죽으면 그 줄이 반쪽으로 남는다. 반쪽
@@ -205,6 +235,19 @@ void test('run checkpoints survive store recreation and settle monotonically', a
     (await reloaded.listRunning()).map((checkpoint) => checkpoint.runId),
     [runId],
   );
+  const runningRecoveryCandidates = await reloaded.listRecoveryCandidates();
+  assert.deepEqual(
+    {
+      running: runningRecoveryCandidates.running.map(
+        (checkpoint) => checkpoint.runId,
+      ),
+      unacknowledgedTerminal:
+        runningRecoveryCandidates.unacknowledgedTerminal.map(
+          (checkpoint) => checkpoint.runId,
+        ),
+    },
+    { running: [runId], unacknowledgedTerminal: [] },
+  );
   const terminal = await store.settleRun({
     threadId,
     runId,
@@ -234,6 +277,15 @@ void test('run checkpoints survive store recreation and settle monotonically', a
     [runId],
   );
   assert.deepEqual(
+    await reloaded.listRecoveryCandidates().then((candidates) => ({
+      running: candidates.running.map((checkpoint) => checkpoint.runId),
+      unacknowledgedTerminal: candidates.unacknowledgedTerminal.map(
+        (checkpoint) => checkpoint.runId,
+      ),
+    })),
+    { running: [], unacknowledgedTerminal: [runId] },
+  );
+  assert.deepEqual(
     await reloaded.acknowledgeTerminalEvent({
       threadId,
       runId,
@@ -254,6 +306,10 @@ void test('run checkpoints survive store recreation and settle monotonically', a
   });
   assert.equal(duplicate.ok && !duplicate.changed, true);
   assert.deepEqual(await reloaded.listUnacknowledgedTerminal(), []);
+  assert.deepEqual(await reloaded.listRecoveryCandidates(), {
+    running: [],
+    unacknowledgedTerminal: [],
+  });
 });
 
 void test('run checkpoints reject projection identity fields outside the observer-safe contract', async (t) => {
@@ -1216,5 +1272,467 @@ void test('run checkpoints persist fail-closed background child recovery ownersh
   await assert.rejects(
     createRunCheckpointStore({ stateRoot }).readThread(threadId),
     /invalid recoverable background child binding/u,
+  );
+});
+
+void test('active model rounds survive restart and fence the stale execution claim', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-model-round-checkpoint-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const firstClaimId = randomUUID();
+  const replacementClaimId = randomUUID();
+  const providerRequestIdentity = 'a'.repeat(64);
+  const logicalRequestIdentity = `sha256:${'e'.repeat(64)}` as const;
+  const store = createRunCheckpointStore({ stateRoot });
+
+  await store.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: '/workspace', permissionMode: 'basic' },
+  });
+  assert.deepEqual((await store.readThread(threadId))?.modelRoundState, {
+    nextRound: 0,
+    active: null,
+    settledUsage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    },
+    continuation: null,
+  });
+
+  const prepared = await store.recordModelRoundPrepared?.({
+    threadId,
+    runId,
+    active: {
+      round: 0,
+      claimId: firstClaimId,
+      modelRoundAttempt: 0,
+      providerRequestAttempt: 0,
+      providerId: 'openai_codex_direct',
+      model: 'gpt-5.6-sol',
+      transportKind: 'websocket',
+      providerRequestIdentity,
+      contextDigest: `sha256:${'b'.repeat(64)}`,
+      toolLibraryProjectionIdentity: {
+        sdkVersion: 'sdk-model-round-v1',
+        sdkProjectionHash: `sha256:${'c'.repeat(64)}`,
+        policyId: 'sha256:model-round-policy',
+      },
+      responseFormat: null,
+      providerReplayScopeId: `sha256:${'d'.repeat(64)}`,
+      logicalRequestIdentity,
+    },
+  });
+  assert.equal(prepared?.ok, true);
+
+  const streaming = await store.markModelRoundPhase?.({
+    threadId,
+    runId,
+    claimId: firstClaimId,
+    providerRequestIdentity,
+    phase: 'streaming',
+  });
+  assert.equal(streaming?.ok, true);
+
+  const replacement = createRunCheckpointStore({ stateRoot });
+  const claimed = await replacement.claimActiveModelRound?.({
+    threadId,
+    runId,
+    claimId: replacementClaimId,
+  });
+  assert.equal(claimed?.ok, true);
+  assert.equal(
+    claimed?.ok
+      ? claimed.checkpoint.modelRoundState?.active?.claimRevision
+      : undefined,
+    2,
+  );
+
+  const stale = await store.markModelRoundPhase?.({
+    threadId,
+    runId,
+    claimId: firstClaimId,
+    providerRequestIdentity,
+    phase: 'terminal_observed',
+  });
+  assert.deepEqual(stale, {
+    ok: false,
+    code: 'model_round_claim_conflict',
+  });
+
+  const terminal = await replacement.markModelRoundPhase?.({
+    threadId,
+    runId,
+    claimId: replacementClaimId,
+    providerRequestIdentity,
+    phase: 'terminal_observed',
+  });
+  assert.equal(terminal?.ok, true);
+  const candidate = await replacement.recordModelRoundSettlementCandidate?.({
+    threadId,
+    runId,
+    claimId: replacementClaimId,
+    logicalRequestIdentity,
+    providerRequestIdentity,
+    candidateDigest: `sha256:${'f'.repeat(64)}`,
+    usage: {
+      inputTokens: 11,
+      outputTokens: 7,
+      cachedInputTokens: 3,
+    },
+  });
+  assert.equal(candidate?.ok, true);
+  const committed = await replacement.commitModelRoundSettlement?.({
+    threadId,
+    runId,
+    claimId: replacementClaimId,
+    logicalRequestIdentity,
+    candidateDigest: `sha256:${'f'.repeat(64)}`,
+    resultDigest: `sha256:${'0'.repeat(64)}`,
+    result: {
+      ok: true,
+      finalProse: '',
+      modelSettlementIdentity: logicalRequestIdentity,
+    },
+    disposition: 'continue',
+    source: 'tool_completion',
+    continuationHistoryText: 'continue with the settled model context',
+  });
+  assert.equal(committed?.ok, true);
+  const completed = await replacement.completeModelRound?.({
+    threadId,
+    runId,
+    claimId: replacementClaimId,
+    logicalRequestIdentity,
+    providerRequestIdentity,
+  });
+  assert.equal(completed?.ok, true);
+  assert.deepEqual(
+    completed?.ok ? completed.checkpoint.modelRoundState : undefined,
+    {
+      nextRound: 1,
+      active: null,
+      settledUsage: {
+        inputTokens: 11,
+        outputTokens: 7,
+        cachedInputTokens: 3,
+      },
+      continuation: {
+        round: 0,
+        logicalRequestIdentity,
+        historyText: 'continue with the settled model context',
+      },
+    },
+  );
+});
+
+void test('a legacy active model round adopts its logical settlement identity', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-legacy-model-settlement-checkpoint-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const claimId = randomUUID();
+  const logicalRequestIdentity = `sha256:${'6'.repeat(64)}` as const;
+  const active = {
+    round: 0,
+    claimId,
+    modelRoundAttempt: 0,
+    providerRequestAttempt: 0,
+    providerId: 'openai_codex_direct' as const,
+    model: 'gpt-5.6-sol',
+    transportKind: 'websocket' as const,
+    providerRequestIdentity: '7'.repeat(64),
+    contextDigest: `sha256:${'8'.repeat(64)}` as const,
+    toolLibraryProjectionIdentity: {
+      sdkVersion: 'sdk-legacy-model-round-v1',
+      sdkProjectionHash: `sha256:${'9'.repeat(64)}` as const,
+      policyId: 'sha256:legacy-model-round-policy',
+    },
+    responseFormat: null,
+    providerReplayScopeId: null,
+    logicalRequestIdentity,
+  };
+  const store = createRunCheckpointStore({ stateRoot });
+  await store.startRun({
+    runId,
+    threadId,
+    request: { permissionMode: 'basic' },
+  });
+  assert.equal(
+    (
+      await store.recordModelRoundPrepared?.({
+        threadId,
+        runId,
+        active,
+      })
+    )?.ok,
+    true,
+  );
+
+  const checkpointPath = join(
+    stateRoot,
+    '.geulbat',
+    'run-checkpoints',
+    `${threadId}.json`,
+  );
+  const persisted = JSON.parse(await readFile(checkpointPath, 'utf8')) as {
+    modelRoundState: {
+      active: {
+        logicalRequestIdentity?: string;
+        settlement?: unknown;
+      };
+      settledUsage?: unknown;
+      continuation?: unknown;
+    };
+  };
+  delete persisted.modelRoundState.active.logicalRequestIdentity;
+  delete persisted.modelRoundState.active.settlement;
+  delete persisted.modelRoundState.settledUsage;
+  delete persisted.modelRoundState.continuation;
+  await writeFile(checkpointPath, `${JSON.stringify(persisted)}\n`, 'utf8');
+
+  const replacement = createRunCheckpointStore({ stateRoot });
+  assert.deepEqual((await replacement.readThread(threadId))?.modelRoundState, {
+    nextRound: 0,
+    active: {
+      ...active,
+      logicalRequestIdentity: null,
+      settlement: null,
+      claimRevision: 1,
+      phase: 'prepared',
+    },
+    settledUsage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    },
+    continuation: null,
+  });
+  const migrated = await replacement.recordModelRoundPrepared?.({
+    threadId,
+    runId,
+    active,
+  });
+  assert.equal(migrated?.ok && migrated.changed, true);
+  assert.equal(
+    migrated?.ok
+      ? migrated.checkpoint.modelRoundState?.active?.logicalRequestIdentity
+      : undefined,
+    logicalRequestIdentity,
+  );
+});
+
+void test('model settlement survives effect uncertainty and charges one logical result once', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-model-settlement-checkpoint-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const committedAt = '2026-07-29T15:00:00.000Z';
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const originalClaimId = randomUUID();
+  const replacementClaimId = randomUUID();
+  const providerRequestIdentity = 'a'.repeat(64);
+  const logicalRequestIdentity = `sha256:${'1'.repeat(64)}` as const;
+  const candidateDigest = `sha256:${'2'.repeat(64)}` as const;
+  const usage = {
+    inputTokens: 19,
+    outputTokens: 5,
+    cachedInputTokens: 11,
+  };
+  const store = createRunCheckpointStore({
+    stateRoot,
+    now: () => committedAt,
+  });
+
+  await store.startRun({
+    runId,
+    threadId,
+    request: { permissionMode: 'basic' },
+  });
+  assert.equal(
+    (
+      await store.recordModelRoundPrepared?.({
+        threadId,
+        runId,
+        active: {
+          round: 0,
+          claimId: originalClaimId,
+          modelRoundAttempt: 0,
+          providerRequestAttempt: 0,
+          providerId: 'openai_codex_direct',
+          model: 'gpt-5.6-sol',
+          transportKind: 'websocket',
+          providerRequestIdentity,
+          contextDigest: `sha256:${'3'.repeat(64)}`,
+          toolLibraryProjectionIdentity: {
+            sdkVersion: 'sdk-model-settlement-v1',
+            sdkProjectionHash: `sha256:${'4'.repeat(64)}`,
+            policyId: 'sha256:model-settlement-policy',
+          },
+          responseFormat: null,
+          providerReplayScopeId: null,
+          logicalRequestIdentity,
+        },
+      })
+    )?.ok,
+    true,
+  );
+  assert.equal(
+    (
+      await store.markModelRoundPhase?.({
+        threadId,
+        runId,
+        claimId: originalClaimId,
+        providerRequestIdentity,
+        phase: 'terminal_observed',
+      })
+    )?.ok,
+    true,
+  );
+
+  const firstCandidate = await store.recordModelRoundSettlementCandidate?.({
+    threadId,
+    runId,
+    claimId: originalClaimId,
+    logicalRequestIdentity,
+    providerRequestIdentity,
+    candidateDigest,
+    usage,
+  });
+  const replayedCandidate = await store.recordModelRoundSettlementCandidate?.({
+    threadId,
+    runId,
+    claimId: originalClaimId,
+    logicalRequestIdentity,
+    providerRequestIdentity,
+    candidateDigest,
+    usage,
+  });
+  assert.equal(firstCandidate?.ok && firstCandidate.changed, true);
+  assert.equal(replayedCandidate?.ok && replayedCandidate.changed, false);
+  assert.deepEqual(
+    await store.recordModelRoundSettlementCandidate?.({
+      threadId,
+      runId,
+      claimId: originalClaimId,
+      logicalRequestIdentity,
+      providerRequestIdentity,
+      candidateDigest,
+      usage: { ...usage, outputTokens: usage.outputTokens + 1 },
+    }),
+    { ok: false, code: 'model_round_settlement_conflict' },
+  );
+
+  assert.equal(
+    (
+      await store.claimActiveModelRound?.({
+        threadId,
+        runId,
+        claimId: replacementClaimId,
+      })
+    )?.ok,
+    true,
+  );
+  assert.deepEqual(
+    await store.beginModelRoundSettlementEffects?.({
+      threadId,
+      runId,
+      claimId: originalClaimId,
+      logicalRequestIdentity,
+      candidateDigest,
+    }),
+    { ok: false, code: 'model_round_claim_conflict' },
+  );
+  const effectsStarted = await store.beginModelRoundSettlementEffects?.({
+    threadId,
+    runId,
+    claimId: replacementClaimId,
+    logicalRequestIdentity,
+    candidateDigest,
+  });
+  assert.equal(effectsStarted?.ok && effectsStarted.changed, true);
+  assert.equal(
+    (await createRunCheckpointStore({ stateRoot }).readThread(threadId))
+      ?.modelRoundState?.active?.settlement?.phase,
+    'effects_started',
+  );
+
+  const result = {
+    ok: true,
+    finalProse: 'settled once',
+    modelSettlementIdentity: logicalRequestIdentity,
+  };
+  const commitArgs = {
+    threadId,
+    runId,
+    claimId: replacementClaimId,
+    logicalRequestIdentity,
+    candidateDigest,
+    resultDigest: `sha256:${'5'.repeat(64)}` as const,
+    result,
+    disposition: 'terminal' as const,
+    source: 'natural' as const,
+    continuationHistoryText: null,
+  };
+  const committed = await store.commitModelRoundSettlement?.(commitArgs);
+  const replayedCommit = await store.commitModelRoundSettlement?.(commitArgs);
+  assert.equal(committed?.ok && committed.changed, true);
+  assert.equal(replayedCommit?.ok && replayedCommit.changed, false);
+  assert.deepEqual(
+    replayedCommit?.ok
+      ? replayedCommit.checkpoint.modelRoundState?.settledUsage
+      : undefined,
+    usage,
+  );
+  assert.equal(
+    replayedCommit?.ok
+      ? replayedCommit.checkpoint.modelRoundState?.active?.settlement
+          ?.committedAt
+      : undefined,
+    committedAt,
+  );
+  assert.deepEqual(
+    await store.commitModelRoundSettlement?.({
+      ...commitArgs,
+      result: { ...result, finalProse: 'divergent result' },
+    }),
+    { ok: false, code: 'model_round_settlement_conflict' },
+  );
+
+  const terminal = await store.settleRun({
+    threadId,
+    runId,
+    terminal: {
+      eventCursor: 1,
+      event: {
+        type: 'done',
+        payload: { answer: result.finalProse, ok: true },
+      },
+      modelSettlementIdentity: logicalRequestIdentity,
+    },
+  });
+  const replayedTerminal = await store.settleRun({
+    threadId,
+    runId,
+    terminal: {
+      eventCursor: 1,
+      event: {
+        type: 'done',
+        payload: { answer: result.finalProse, ok: true },
+      },
+      modelSettlementIdentity: logicalRequestIdentity,
+    },
+  });
+  assert.deepEqual(replayedTerminal, terminal);
+  assert.equal(
+    terminal.terminal?.modelSettlementIdentity,
+    logicalRequestIdentity,
   );
 });

@@ -46,6 +46,7 @@ interface HomeCenterPanelView {
       | 'onOpenFolder'
       | 'onOpenRecentFile'
       | 'onRemoveRecentFile'
+      | 'gitReviewTrigger'
       | 'artifactPill'
       | 'artifactSurface'
     >

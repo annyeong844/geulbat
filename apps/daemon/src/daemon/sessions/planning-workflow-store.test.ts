@@ -154,6 +154,66 @@ void test('planning workflow persists exact approval and publishes stable update
   });
 });
 
+void test('revision collection preserves the immediately previous canonical draft across restart', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'planning-revision-diff-'));
+  const store = createPlanningWorkflowStore({
+    stateRoot,
+    createId: () => 'revision-diff',
+  });
+  await store.enterOrResume({
+    threadId,
+    requested: true,
+    intensity: 'visual',
+    depth: 'deep',
+    executionTemplate: executionTemplate(),
+  });
+  const first = await store.propose({ threadId, proposalRunId, draft });
+  const collecting = await store.applyCommand({
+    kind: 'request_revision',
+    threadId,
+    workflowId: first.workflowId,
+    planId: first.planId,
+    revision: first.revision,
+    digest: first.digest,
+    feedback: '검증 단계를 별도 단계로 나눠주세요.',
+  });
+  assert.equal(collecting.snapshot?.state, 'collecting');
+  assert.deepEqual(collecting.snapshot?.supersededPlan, {
+    workflowId: first.workflowId,
+    planId: first.planId,
+    revision: first.revision,
+    digest: first.digest,
+    draft,
+  });
+
+  const restarted = createPlanningWorkflowStore({ stateRoot });
+  const revisedDraft: PlanDraftV1 = {
+    ...draft,
+    outcome: 'Enforce exact plan approval and show revision changes',
+    steps: [
+      ...draft.steps,
+      {
+        id: 'verification',
+        text: 'Verify the approved workflow',
+        acceptanceCriteria: ['The previous revision remains comparable'],
+      },
+    ],
+  };
+  const revised = await restarted.propose({
+    threadId,
+    proposalRunId: assertRunId('run-plan-proposal-revision'),
+    draft: revisedDraft,
+  });
+  assert.equal(revised.revision, first.revision + 1);
+  assert.deepEqual(revised.supersededPlan, {
+    workflowId: first.workflowId,
+    planId: first.planId,
+    revision: first.revision,
+    digest: first.digest,
+    draft,
+  });
+});
+
 void test('planning workflow rejects mutation before approval and structural drift after publication', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'planning-clamp-'));
   const store = createPlanningWorkflowStore({

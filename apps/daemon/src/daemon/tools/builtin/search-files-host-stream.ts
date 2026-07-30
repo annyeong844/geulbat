@@ -177,6 +177,7 @@ export async function streamHostRoutedCommandLines(args: {
     };
 
     for (;;) {
+      const terminalWasKnownBeforeDrain = snapshot.status !== 'running';
       // 두 스트림을 매 회차 함께 비운다 — protocol 모드는 예산이 차면 그 스트림의
       // 소스를 멈추므로, stderr를 안 읽으면 진단을 많이 쏟는 자식이 멈춰 서게 된다.
       const stdoutDrain = await drain('stdout');
@@ -191,6 +192,13 @@ export async function streamHostRoutedCommandLines(args: {
         continue;
       }
       if (snapshot.status !== 'running') {
+        // stdout page를 읽은 직후 자식이 끝나 stderr 관찰에서 처음 terminal이
+        // 보일 수 있다. 그 사이 도착한 stdout 꼬리는 이번 stdout page에는
+        // 없었으므로, terminal을 이미 알고 시작한 회차에서 두 스트림을 한 번
+        // 더 완전히 비운 뒤에만 종료한다.
+        if (!terminalWasKnownBeforeDrain) {
+          continue;
+        }
         terminalObserved = true;
         break;
       }

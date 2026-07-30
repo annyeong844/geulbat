@@ -1,10 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { createLogger } from '@geulbat/structured-logger/logger';
 import type { RunId, ThreadId } from '../contract.js';
 import type {
   AgentChildTerminalReason,
   AgentChildTerminalState,
   ChildRunSnapshot,
-  ChildRunStatus,
   ChildRunTerminalSnapshot,
   SubagentCapability,
   SubagentRuntimeDiagnostics,
@@ -33,6 +33,7 @@ export interface ChildRunRegistry {
   }): ChildRunSnapshot | undefined;
   markChildTerminal(args: {
     childRunId: RunId;
+    deliveryId?: string;
     terminalState: AgentChildTerminalState;
     result: string;
     reason?: AgentChildTerminalReason | null;
@@ -44,6 +45,13 @@ export interface ChildRunRegistry {
   };
   getActiveChildRuns(): ChildRunSnapshot[];
   getActiveChildRunsByOwnerThread(ownerThreadId: ThreadId): ChildRunSnapshot[];
+  getRetainedChildRunsByOwnerThread(
+    ownerThreadId: ThreadId,
+  ): ChildRunSnapshot[];
+  /**
+   * Publishes active-state changes and the final terminal transition that
+   * removes the child from the active set.
+   */
   subscribeActiveChildRunUpdates(
     ownerThreadId: ThreadId,
     listener: (snapshot: ChildRunSnapshot) => void,
@@ -140,16 +148,10 @@ function cloneSnapshot(snapshot: ChildRunSnapshot): ChildRunSnapshot {
   };
 }
 
-function isTerminalStatus(
-  status: ChildRunStatus,
-): status is AgentChildTerminalState {
-  return isAgentChildTerminalState(status);
-}
-
 function isTerminalSnapshot(
   snapshot: ChildRunSnapshot,
 ): snapshot is ChildRunTerminalSnapshot {
-  return isTerminalStatus(snapshot.status);
+  return isAgentChildTerminalState(snapshot.status);
 }
 
 function createChildRunRevisionTracker(): ChildRunRevisionTracker {
@@ -213,9 +215,9 @@ function createChildRunRevisionTracker(): ChildRunRevisionTracker {
 export function createChildRunRegistry(): ChildRunRegistry {
   const records = new Map<RunId, ChildRunSnapshot>();
   const revisionTracker = createChildRunRevisionTracker();
-  const activeChildRunUpdates = createSignal<[ChildRunSnapshot]>({
+  const childRunUpdates = createSignal<[ChildRunSnapshot]>({
     onListenerError(error) {
-      logger.warn('active child listener failed:', error);
+      logger.warn('child run listener failed:', error);
     },
   });
 
@@ -274,7 +276,7 @@ export function createChildRunRegistry(): ChildRunRegistry {
       };
       records.set(args.childRunId, cloneSnapshot(snapshot));
       revisionTracker.bumpRevision();
-      activeChildRunUpdates.emit(cloneSnapshot(snapshot));
+      childRunUpdates.emit(cloneSnapshot(snapshot));
     },
     markChildApprovalPending(childRunId) {
       mutateRecord(childRunId, (current) => {
@@ -339,10 +341,16 @@ export function createChildRunRegistry(): ChildRunRegistry {
       };
       records.set(childRunId, next);
       revisionTracker.bumpRevision();
-      activeChildRunUpdates.emit(cloneSnapshot(next));
+      childRunUpdates.emit(cloneSnapshot(next));
       return cloneSnapshot(next);
     },
-    markChildTerminal({ childRunId, terminalState, result, reason }) {
+    markChildTerminal({
+      childRunId,
+      deliveryId,
+      terminalState,
+      result,
+      reason,
+    }) {
       const current = records.get(childRunId);
       if (!current) {
         return;
@@ -356,15 +364,21 @@ export function createChildRunRegistry(): ChildRunRegistry {
       ) {
         return;
       }
-      records.set(childRunId, {
+      const now = new Date().toISOString();
+      const next: ChildRunTerminalSnapshot = {
         ...current,
+        deliveryId: isTerminalSnapshot(current)
+          ? current.deliveryId
+          : (deliveryId ?? randomUUID()),
         status: terminalState,
         result,
-        completedAt: new Date().toISOString(),
+        completedAt: now,
         reason: nextReason,
-        updatedAt: new Date().toISOString(),
-      });
+        updatedAt: now,
+      };
+      records.set(childRunId, next);
       revisionTracker.bumpRevision();
+      childRunUpdates.emit(cloneSnapshot(next));
     },
     getChildRun(childRunId) {
       const snapshot = records.get(childRunId);
@@ -385,12 +399,14 @@ export function createChildRunRegistry(): ChildRunRegistry {
     getActiveChildRunsByOwnerThread(ownerThreadId) {
       return readActiveChildRuns(ownerThreadId);
     },
+    getRetainedChildRunsByOwnerThread(ownerThreadId) {
+      return [...records.values()]
+        .filter((record) => record.ownerThreadId === ownerThreadId)
+        .map(cloneSnapshot);
+    },
     subscribeActiveChildRunUpdates(ownerThreadId, listener) {
-      return activeChildRunUpdates.subscribe((snapshot) => {
-        if (
-          snapshot.ownerThreadId === ownerThreadId &&
-          !isTerminalSnapshot(snapshot)
-        ) {
+      return childRunUpdates.subscribe((snapshot) => {
+        if (snapshot.ownerThreadId === ownerThreadId) {
           listener(cloneSnapshot(snapshot));
         }
       });

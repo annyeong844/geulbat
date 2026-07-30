@@ -593,7 +593,11 @@ void test('apply_patch applies one update hunk with exact context', async () => 
 
   const result = await applyPatchTool.execute(
     { patch: updatePatch('hello.txt', 'world\n', 'geulbat\n') },
-    { callId: 'call-apply-patch-update', computerFileRoot },
+    {
+      callId: 'call-apply-patch-update',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -616,7 +620,11 @@ void test('apply_patch atomically updates a file through a symlink', async (t) =
 
   const result = await applyPatchTool.execute(
     { patch: updatePatch('settings.txt', 'MODE=old\n', 'MODE=new\n') },
-    { callId: 'call-apply-patch-symlink', computerFileRoot },
+    {
+      callId: 'call-apply-patch-symlink',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -649,7 +657,11 @@ void test('apply_patch applies multiple hunks in one file operation', async () =
         '',
       ].join('\n'),
     },
-    { callId: 'call-apply-patch-multi-hunk', computerFileRoot },
+    {
+      callId: 'call-apply-patch-multi-hunk',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -671,7 +683,11 @@ void test('apply_patch rejects hunk context that appears more than once', async 
 
   const result = await applyPatchTool.execute(
     { patch: updatePatch('hello.txt', 'hello\n', 'updated\n') },
-    { callId: 'call-apply-patch-duplicate', computerFileRoot },
+    {
+      callId: 'call-apply-patch-duplicate',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -695,7 +711,11 @@ void test('apply_patch adds a new file', async () => {
         '',
       ].join('\n'),
     },
-    { callId: 'call-apply-patch-add', computerFileRoot },
+    {
+      callId: 'call-apply-patch-add',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -723,6 +743,7 @@ void test('apply_patch adds and updates files in ComputerFileScope', async () =>
     {
       callId: 'call-computer-apply-patch-add',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 
@@ -740,6 +761,7 @@ void test('apply_patch adds and updates files in ComputerFileScope', async () =>
     {
       callId: 'call-computer-apply-patch-update',
       computerFileRoot,
+      workingDirectory: '',
     },
   );
 
@@ -767,7 +789,11 @@ void test('apply_patch adds a new file without forcing a final newline', async (
         '',
       ].join('\n'),
     },
-    { callId: 'call-apply-patch-add-no-newline', computerFileRoot },
+    {
+      callId: 'call-apply-patch-add-no-newline',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -793,7 +819,11 @@ void test('apply_patch rejects adding over an existing file', async () => {
         '',
       ].join('\n'),
     },
-    { callId: 'call-apply-patch-existing-add', computerFileRoot },
+    {
+      callId: 'call-apply-patch-existing-add',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -879,13 +909,21 @@ void test('apply_patch rejects old source paths after manage_files rename', asyn
       path: 'hello.txt',
       destination: 'renamed.txt',
     },
-    { callId: 'call-manage-rename-apply-patch', computerFileRoot },
+    {
+      callId: 'call-manage-rename-apply-patch',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
   assert.equal(renameResult.ok, true);
 
   const result = await applyPatchTool.execute(
     { patch: updatePatch('hello.txt', 'world\n', 'updated\n') },
-    { callId: 'call-apply-patch-rename', computerFileRoot },
+    {
+      callId: 'call-apply-patch-rename',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -911,7 +949,11 @@ void test('apply_patch updates a file without requiring a final newline', async 
         '',
       ].join('\n'),
     },
-    { callId: 'call-apply-patch-update-no-newline', computerFileRoot },
+    {
+      callId: 'call-apply-patch-update-no-newline',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, true);
@@ -939,13 +981,21 @@ void test('apply_patch rejects old source paths after manage_files move', async 
       path: 'src/hello.txt',
       destination: 'dst/hello.txt',
     },
-    { callId: 'call-manage-move-apply-patch', computerFileRoot },
+    {
+      callId: 'call-manage-move-apply-patch',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
   assert.equal(moveResult.ok, true);
 
   const result = await applyPatchTool.execute(
     { patch: updatePatch('src/hello.txt', 'world\n', 'updated\n') },
-    { callId: 'call-apply-patch-move', computerFileRoot },
+    {
+      callId: 'call-apply-patch-move',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
@@ -965,13 +1015,21 @@ void test('apply_patch rejects deleted source paths after manage_files delete', 
 
   const deleteResult = await manageFilesTool.execute(
     { operation: 'delete', path: 'hello.txt' },
-    { callId: 'call-manage-delete-apply-patch', computerFileRoot },
+    {
+      callId: 'call-manage-delete-apply-patch',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
   assert.equal(deleteResult.ok, true);
 
   const result = await applyPatchTool.execute(
     { patch: updatePatch('hello.txt', 'world\n', 'updated\n') },
-    { callId: 'call-apply-patch-deleted', computerFileRoot },
+    {
+      callId: 'call-apply-patch-deleted',
+      computerFileRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createUnusedPlacementDependencies } from '../../../../test-support/ptc-execute-code-placement.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { createPtcExecuteCodePlacementCoordinator } from './execute-code-placement.js';
 import {
@@ -7,29 +8,8 @@ import {
   createPtcExecuteCodeCallbackEffectPolicy,
   readPtcExecuteCodePlacementObservation,
   resolvePtcExecuteCodeBurstPlacementConfigFromEnv,
-  type PtcExecuteCodePlacementBatchRunner,
 } from './execute-code-placement-contract.js';
 import type { PtcSessionDockerManager } from '../../lab/session/session-docker-contract.js';
-
-function createUnusedPlacementDependencies() {
-  const sessionManager = {
-    async getOrCreate() {
-      throw new Error('not used by placement acquisition');
-    },
-    async close() {
-      return { ok: true, value: undefined };
-    },
-    async closeAll() {
-      return { ok: true, value: undefined };
-    },
-  } satisfies PtcSessionDockerManager;
-  const batchRunner = {
-    async runPtcLabSessionBatchCommand() {
-      throw new Error('not used by placement acquisition');
-    },
-  } satisfies PtcExecuteCodePlacementBatchRunner;
-  return { sessionManager, batchRunner };
-}
 
 function createResourceAdmission(maxActiveExecutions: number) {
   return {

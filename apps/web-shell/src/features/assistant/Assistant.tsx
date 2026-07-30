@@ -10,7 +10,7 @@ import {
   resolveMaximumReasoningEffort,
 } from '@geulbat/protocol/run-contract';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
-import { isSamePlanRenderingStamp } from '@geulbat/protocol/planning-workflow';
+import { isSameApprovedPlanRef } from '@geulbat/protocol/planning-workflow';
 import type {
   PrepareProviderTransitionRequest,
   ThreadMessage,
@@ -64,6 +64,7 @@ import {
 import { WorkingDirectoryPickerDialog } from './working-directory-picker-dialog.js';
 import {
   PlanningWorkflowCard,
+  resolvePlanningInterviewDecisions,
   type AssistantPlanningWorkflow,
 } from './run-plan/planning-workflow-card.js';
 import { GoalStatusCard, type AssistantGoal } from './goal-status-card.js';
@@ -565,19 +566,54 @@ export function Assistant({
   // (`transcriptEntries`는 런/스레드 전환에서 `createEmptyActiveRunView`로 새로
   // 시작한다). 둘을 한 memo에 두면 토큰이 도착할 때마다 기록 전체를 다시 훑는데,
   // 계획을 쓰지 않는 대화에서는 그것이 매 델타의 순수 헛일이 된다.
-  const settledPendingRunPlan = useMemo(
-    () => resolveRunPlanHistory(messages).pendingPlan,
+  const settledRunPlanHistory = useMemo(
+    () => resolveRunPlanHistory(messages),
     [messages],
   );
+  const settledPendingRunPlan = settledRunPlanHistory.pendingPlan;
+  const liveRunPlan = useMemo(
+    () => resolveLatestLiveRunPlan(transcriptEntries),
+    [transcriptEntries],
+  );
   const activeRunPlan = useMemo(() => {
-    const plan =
-      resolveLatestLiveRunPlan(transcriptEntries) ?? settledPendingRunPlan;
+    const plan = liveRunPlan ?? settledPendingRunPlan;
     return plan?.some((step) => step.status !== 'completed') ? plan : null;
-  }, [settledPendingRunPlan, transcriptEntries]);
+  }, [liveRunPlan, settledPendingRunPlan]);
   const planningWorkflowSnapshot = planningWorkflow?.snapshot ?? null;
+  const planningExecutionPlan = useMemo(() => {
+    const snapshot = planningWorkflowSnapshot;
+    if (
+      snapshot?.state !== 'executing' &&
+      snapshot?.state !== 'completed' &&
+      snapshot?.state !== 'execution_failed'
+    ) {
+      return null;
+    }
+    return (
+      liveRunPlan ??
+      settledRunPlanHistory.plansByRunId.get(snapshot.executionRunId) ??
+      settledPendingRunPlan ??
+      null
+    );
+  }, [
+    liveRunPlan,
+    planningWorkflowSnapshot,
+    settledPendingRunPlan,
+    settledRunPlanHistory,
+  ]);
+  const planningInterviewDecisions = useMemo(
+    () =>
+      planningWorkflowSnapshot === null
+        ? []
+        : resolvePlanningInterviewDecisions(
+            visibleMessages,
+            planningWorkflowSnapshot.createdAt,
+          ),
+    [planningWorkflowSnapshot, visibleMessages],
+  );
   const planningVisualization = useMemo(() => {
     const snapshot = planningWorkflowSnapshot;
-    if (snapshot?.state !== 'awaiting_approval') {
+    if (snapshot === null || snapshot.state === 'collecting') {
       return null;
     }
     for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
@@ -588,7 +624,7 @@ export function Assistant({
       const view = readVisualizeWidgetViewFromToolCallContent(message.content);
       if (
         view?.planStamp !== undefined &&
-        isSamePlanRenderingStamp(view.planStamp, snapshot)
+        isSameApprovedPlanRef(view.planStamp, snapshot)
       ) {
         return view;
       }
@@ -757,6 +793,7 @@ export function Assistant({
         activeArtifact={activeArtifact}
         planningWorkflowSnapshot={planningWorkflow?.snapshot ?? null}
         streamError={streamError}
+        streamErrorCode={streamErrorCode}
         isRunning={isRunning}
         usageTotals={usageTotals}
         providerRuntime={providerRuntime}
@@ -800,6 +837,8 @@ export function Assistant({
             key={planCardKey}
             workflow={planningWorkflow}
             visualization={planningVisualization}
+            executionPlan={planningExecutionPlan}
+            interviewDecisions={planningInterviewDecisions}
             onWidgetPrompt={onWidgetPrompt ?? onSend}
             {...(planCardKey === null
               ? {}
@@ -865,7 +904,6 @@ export function Assistant({
           contextUsage={contextUsage}
           goalSnapshot={goal?.snapshot ?? null}
           workingDirectory={workspaceInput.workingDirectory}
-          browseStartPath={workspaceInput.browseStartPath}
           workingDirectorySelectionPending={
             workingDirectoryPicker.selectionPending
           }

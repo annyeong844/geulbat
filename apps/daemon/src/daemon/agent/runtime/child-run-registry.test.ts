@@ -77,7 +77,51 @@ void test('child run registry tracks launch, approval pending, and terminal stat
   assert.equal(terminalResult?.includes('child failed'), true);
 });
 
-void test('child run registry exposes active children by their owner thread for reconnect', () => {
+void test('child run registry publishes the terminal transition to its active-child subscriber', () => {
+  const registry = createChildRunRegistry();
+  const ownerThreadId = testThreadId(88);
+  const childRunId = testRunId('child-terminal-update');
+  const observed: ChildRunSnapshot[] = [];
+  const unsubscribe = registry.subscribeActiveChildRunUpdates(
+    ownerThreadId,
+    (snapshot) => {
+      observed.push(snapshot);
+    },
+  );
+
+  try {
+    registry.registerChildRun({
+      ...TEST_CHILD_MODEL_REGISTRATION,
+      childRunId,
+      childThreadId: testThreadId(89),
+      parentRunId: testRunId('parent-terminal-update'),
+      ownerThreadId,
+      subagentType: 'worker',
+    });
+    registry.markChildTerminal({
+      childRunId,
+      terminalState: 'failed',
+      result: 'child stopped',
+      reason: 'child_error',
+    });
+
+    assert.deepEqual(
+      observed.map((snapshot) => snapshot.status),
+      ['running', 'failed'],
+    );
+    const terminal = observed[1];
+    assert.ok(terminal);
+    assert.equal('deliveryId' in terminal, true);
+    if ('deliveryId' in terminal) {
+      assert.equal(typeof terminal.deliveryId, 'string');
+      assert.notEqual(terminal.deliveryId, '');
+    }
+  } finally {
+    unsubscribe();
+  }
+});
+
+void test('child run registry exposes active and retained children by their owner thread', () => {
   const registry = createChildRunRegistry();
   const ownerThreadId = testThreadId(81);
   const otherOwnerThreadId = testThreadId(82);
@@ -136,6 +180,16 @@ void test('child run registry exposes active children by their owner thread for 
       testRunId('child-active-running'),
       testRunId('child-active-approval'),
       testRunId('child-other-owner'),
+    ],
+  );
+  assert.deepEqual(
+    registry
+      .getRetainedChildRunsByOwnerThread(ownerThreadId)
+      .map((snapshot) => [snapshot.childRunId, snapshot.status]),
+    [
+      [testRunId('child-active-running'), 'running'],
+      [testRunId('child-active-approval'), 'approval_pending'],
+      [testRunId('child-terminal'), 'completed'],
     ],
   );
 });

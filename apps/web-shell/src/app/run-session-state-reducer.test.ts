@@ -11,6 +11,7 @@ import { makeApprovalRequiredFixture } from '../test-support/protocol-fixtures.j
 import {
   OTHER_THREAD_ID_VALUE,
   RUN_ID,
+  STALE_RUN_ID,
   THREAD_ID,
   THREAD_ID_VALUE,
 } from '../test-support/run-session-fixtures.js';
@@ -251,6 +252,7 @@ void test('approval submit failure preserves pending approval and records a visi
     ),
     {
       type: 'approval_requested',
+      runId: RUN_ID,
       threadId: THREAD_ID,
       pendingApproval: makeApprovalRequiredFixture({
         runId: RUN_ID,
@@ -279,6 +281,72 @@ void test('approval submit failure preserves pending approval and records a visi
   assert.equal(cleared.activeRunView.streamError, null);
 });
 
+void test('a delayed approval from an older run cannot reopen the current run approval card', () => {
+  const running = reduceRunSessionState(
+    reduceRunSessionState(createInitialRunSessionState(), {
+      type: 'run_start_requested',
+      threadId: THREAD_ID_VALUE,
+    }),
+    {
+      type: 'run_started',
+      threadId: THREAD_ID_VALUE,
+      runId: RUN_ID,
+    },
+  );
+  const staleApproval = makeApprovalRequiredFixture({
+    callId: 'stale-approval-call',
+    runId: STALE_RUN_ID,
+    threadId: THREAD_ID,
+  });
+
+  const afterDelayedApproval = reduceRunSessionState(running, {
+    type: 'approval_requested',
+    runId: STALE_RUN_ID,
+    threadId: THREAD_ID_VALUE,
+    pendingApproval: staleApproval,
+  });
+
+  assert.equal(afterDelayedApproval, running);
+  assert.equal(afterDelayedApproval.activeRunView.pendingApproval, null);
+  assert.deepEqual(afterDelayedApproval.activeRunView.pendingApprovals, []);
+  assert.deepEqual(afterDelayedApproval.activeRunView.transcriptEntries, []);
+});
+
+void test('an approval delayed past settlement cannot reopen the finished run approval card', () => {
+  const running = reduceRunSessionState(
+    reduceRunSessionState(createInitialRunSessionState(), {
+      type: 'run_start_requested',
+      threadId: THREAD_ID_VALUE,
+    }),
+    {
+      type: 'run_started',
+      threadId: THREAD_ID_VALUE,
+      runId: RUN_ID,
+    },
+  );
+  const settling = reduceRunSessionState(running, {
+    type: 'run_settle_sync_started',
+    runId: RUN_ID,
+    threadId: THREAD_ID_VALUE,
+  });
+
+  const afterDelayedApproval = reduceRunSessionState(settling, {
+    type: 'approval_requested',
+    runId: RUN_ID,
+    threadId: THREAD_ID_VALUE,
+    pendingApproval: makeApprovalRequiredFixture({
+      callId: 'settled-approval-call',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+    }),
+  });
+
+  assert.equal(afterDelayedApproval, settling);
+  assert.equal(afterDelayedApproval.activeRunView.pendingApproval, null);
+  assert.deepEqual(afterDelayedApproval.activeRunView.pendingApprovals, []);
+  assert.deepEqual(afterDelayedApproval.activeRunView.transcriptEntries, []);
+});
+
 void test('multiple pending approvals are revealed one at a time as each is cleared', () => {
   const firstApproval = makeApprovalRequiredFixture({
     callId: 'approval-call-1',
@@ -304,11 +372,13 @@ void test('multiple pending approvals are revealed one at a time as each is clea
   const withApprovals = reduceRunSessionState(
     reduceRunSessionState(running, {
       type: 'approval_requested',
+      runId: RUN_ID,
       threadId: THREAD_ID_VALUE,
       pendingApproval: firstApproval,
     }),
     {
       type: 'approval_requested',
+      runId: RUN_ID,
       threadId: THREAD_ID_VALUE,
       pendingApproval: secondApproval,
     },

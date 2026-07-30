@@ -11,6 +11,7 @@ import {
   buildVisualizeWidgetDocument,
   buildVisualizeWidgetStreamDocument,
   VISUALIZE_STREAM_UPDATE_MESSAGE_KIND,
+  type VisualizePlanStepState,
 } from '../../artifacts/runtime-preview/visualize/document.js';
 import { readVisualizeStreamViewFromArgsText } from './visualize-widget-view.js';
 import { ArtifactRuntimeFrame } from '../runtime-frame/artifact-runtime-frame-lazy.js';
@@ -171,6 +172,7 @@ export function VisualizeStreamingWidget(props: {
 export function VisualizeWidget(props: {
   view: VisualizeWidgetView;
   planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
+  planStepStates?: readonly VisualizePlanStepState[];
   playback?: 'auto' | 'instant';
   deferRuntimeBoot?: boolean;
   onWidgetPrompt?: (prompt: string) => Promise<void> | void;
@@ -181,6 +183,7 @@ export function VisualizeWidget(props: {
   const {
     view,
     planningWorkflowSnapshot,
+    planStepStates,
     playback = 'auto',
     deferRuntimeBoot = false,
     onWidgetPrompt,
@@ -212,11 +215,12 @@ export function VisualizeWidget(props: {
             mode: view.mode,
             code: view.code,
             title: view.title,
+            ...(planStepStates === undefined ? {} : { planStepStates }),
           },
           { instant },
         ),
       ),
-    [view.code, view.mode, view.title, instant],
+    [view.code, view.mode, view.title, instant, planStepStates],
   );
   const sourceRef = useMemo(
     () =>

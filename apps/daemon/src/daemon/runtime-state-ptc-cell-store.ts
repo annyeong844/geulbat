@@ -556,13 +556,15 @@ function parseCallbackToolNamesJson(serialized: string): string[] {
   } catch {
     throw new Error('persisted PTC cell callback tool names JSON is invalid');
   }
-  if (
-    !Array.isArray(value) ||
-    value.some((name) => typeof name !== 'string' || name.length === 0)
-  ) {
+  if (!Array.isArray(value)) {
     throw new Error('persisted PTC cell callback tool names are invalid');
   }
-  return value;
+  return value.map((name: unknown) => {
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new Error('persisted PTC cell callback tool names are invalid');
+    }
+    return name;
+  });
 }
 
 function validateCoordinate(coordinate: PtcExecuteCodeCellCoordinate): void {

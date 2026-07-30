@@ -310,39 +310,36 @@ void test('listenDaemonHttpServer rejects async bind errors for startup cleanup 
   }
 });
 
-void test('listenDaemonHttpServer warns when the configured bind host is not loopback', async () => {
+void test('listenDaemonHttpServer rejects a non-loopback bind before listening', async () => {
   const server = createServer();
-  const warnings: string[] = [];
-  const listenArgs = {
-    server,
-    port: 0,
-    host: '0.0.0.0',
-    reportExposureWarning: (message: string) => warnings.push(message),
-  };
 
   try {
-    await listenDaemonHttpServer(listenArgs);
-    assert.deepEqual(warnings, [
-      'daemon bind host "0.0.0.0" is not loopback; local dev-token authentication is intended for single-user local use only',
-    ]);
+    await assert.rejects(
+      listenDaemonHttpServer({
+        server,
+        port: 0,
+        host: '0.0.0.0',
+      }),
+      new Error(
+        'daemon bind host "0.0.0.0" is not loopback; remote binds are unsupported',
+      ),
+    );
+    assert.equal(server.listening, false);
   } finally {
     await closeIfListening(server);
   }
 });
 
-void test('listenDaemonHttpServer keeps the default loopback bind quiet', async () => {
+void test('listenDaemonHttpServer accepts the default loopback bind', async () => {
   const server = createServer();
-  const warnings: string[] = [];
-  const listenArgs = {
-    server,
-    port: 0,
-    host: '127.0.0.1',
-    reportExposureWarning: (message: string) => warnings.push(message),
-  };
 
   try {
-    await listenDaemonHttpServer(listenArgs);
-    assert.deepEqual(warnings, []);
+    await listenDaemonHttpServer({
+      server,
+      port: 0,
+      host: '127.0.0.1',
+    });
+    assert.equal(server.listening, true);
   } finally {
     await closeIfListening(server);
   }

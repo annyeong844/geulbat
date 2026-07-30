@@ -57,6 +57,10 @@ export type ErrorCode =
   // Responses WS encrypted reasoning blob 검증 실패. context overflow와
   // 문구가 겹칠 수 있어 별도 코드로 둔다.
   | 'llm_replay_state_rejected'
+  // provider 요청이 전달됐을 수 있지만 command-host의 durable terminal
+  // evidence를 확인할 수 없는 상태. 자동 재전송하면 중복 작업·요금 위험이
+  // 있으므로 사용자의 명시적 복구 승인을 받아야 한다.
+  | 'llm_provider_request_outcome_unknown'
   | 'provider_transition_required'
   | 'provider_transition_preparation_failed'
   | 'rate_limited'
@@ -144,6 +148,7 @@ export const ERROR_CODES = [
   'llm_context_length_exceeded',
   'llm_output_budget_exceeded',
   'llm_replay_state_rejected',
+  'llm_provider_request_outcome_unknown',
   'provider_transition_required',
   'provider_transition_preparation_failed',
   'rate_limited',

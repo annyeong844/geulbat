@@ -1,10 +1,5 @@
-import { Buffer } from 'node:buffer';
-import http from 'node:http';
-import https from 'node:https';
-import {
-  guardedLookupPublicAddress,
-  parseWebFetchHttpUrl,
-} from './web-fetch-url-guard.js';
+import type { Buffer } from 'node:buffer';
+import { parseWebFetchHttpUrl } from './web-fetch-url-guard.js';
 import type { WebFetchFailureReasonCode } from './web-fetch-result.js';
 import {
   webFetchFailure,
@@ -12,7 +7,6 @@ import {
   type WebFetchSuccess,
 } from './web-fetch-result.js';
 import type { WebFetchLookup } from './web-fetch-url-guard.js';
-import { runDetached } from '../../utils/run-detached.js';
 
 interface WebFetchHttpResponse {
   status: number;
@@ -51,7 +45,7 @@ export async function fetchWebUrl(args: {
     ...args,
     originalUrl: args.url,
     visitedUrls: new Set<string>(),
-    requestWebFetchUrl: args.requestWebFetchUrl ?? requestWebFetchUrl,
+    requestWebFetchUrl: args.requestWebFetchUrl ?? unavailableWebFetchTransport,
   });
 }
 
@@ -98,11 +92,13 @@ async function fetchWebUrlWithRedirects(args: {
       url: args.originalUrl,
       finalUrl: parsed.url.href,
       reasonCode:
-        error instanceof WebFetchRuntimeError
-          ? error.reasonCode
-          : message.includes('timeout')
-            ? 'timeout'
-            : 'network_error',
+        args.signal?.aborted === true
+          ? 'aborted'
+          : error instanceof WebFetchRuntimeError
+            ? error.reasonCode
+            : message.includes('timeout')
+              ? 'timeout'
+              : 'network_error',
       message,
     });
   }
@@ -158,100 +154,13 @@ async function fetchWebUrlWithRedirects(args: {
   return success;
 }
 
-export function requestWebFetchUrl(
-  url: URL,
-  options: {
-    lookup?: WebFetchLookup;
-    signal?: AbortSignal;
-  },
-): Promise<WebFetchHttpResponse> {
-  if (options.signal?.aborted) {
-    return Promise.reject(
-      new WebFetchRuntimeError('aborted', 'fetch_url aborted'),
-    );
-  }
-
-  const client = url.protocol === 'https:' ? https : http;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (callback: () => void, cleanup: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      callback();
-    };
-
-    const request = client.request(
-      url,
-      {
-        method: 'GET',
-        headers: {
-          accept:
-            'text/html,text/plain,application/json,application/xml,application/xhtml+xml,application/rss+xml,application/atom+xml;q=0.9,*/*;q=0.1',
-          'accept-encoding': 'identity',
-          'user-agent': 'geulbat-fetch-url/1',
-        },
-        lookup(hostname, lookupOptions, callback) {
-          runDetached('tools/web-fetch-lookup', () =>
-            guardedLookupPublicAddress(
-              hostname,
-              options.lookup ? { lookup: options.lookup } : {},
-            )
-              .then((record) => {
-                if (lookupOptions.all) {
-                  callback(null, [record]);
-                  return;
-                }
-                callback(null, record.address, record.family);
-              })
-              .catch((error: unknown) => {
-                const lookupError =
-                  error instanceof Error ? error : new Error(String(error));
-                if (lookupOptions.all) {
-                  callback(lookupError, []);
-                  return;
-                }
-                callback(lookupError, '', 4);
-              }),
-          );
-        },
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer) => {
-          chunks.push(chunk);
-        });
-        response.on('end', () => {
-          finish(
-            () =>
-              resolve({
-                status: response.statusCode ?? 0,
-                location: readHeader(response.headers.location),
-                contentType: readHeader(response.headers['content-type']),
-                body: Buffer.concat(chunks),
-              }),
-            cleanup,
-          );
-        });
-        response.on('error', (error) => {
-          finish(() => reject(error), cleanup);
-        });
-      },
-    );
-
-    const abort = () =>
-      request.destroy(new WebFetchRuntimeError('aborted', 'fetch_url aborted'));
-    const cleanup = () => {
-      options.signal?.removeEventListener('abort', abort);
-    };
-    options.signal?.addEventListener('abort', abort, { once: true });
-    request.on('error', (error) => {
-      finish(() => reject(error), cleanup);
-    });
-    request.end();
-  });
+function unavailableWebFetchTransport(): Promise<WebFetchHttpResponse> {
+  return Promise.reject(
+    new WebFetchRuntimeError(
+      'network_error',
+      'Host-routed public HTTP transport is unavailable.',
+    ),
+  );
 }
 
 function isRedirectStatus(status: number): boolean {
@@ -337,13 +246,6 @@ function normalizeLineEndings(value: string): string {
 
 function countTextLines(value: string): number {
   return value.length === 0 ? 0 : value.split('\n').length;
-}
-
-function readHeader(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) {
-    return value[0] ?? null;
-  }
-  return value ?? null;
 }
 
 function readHtmlTitle(text: string): { title?: string } {

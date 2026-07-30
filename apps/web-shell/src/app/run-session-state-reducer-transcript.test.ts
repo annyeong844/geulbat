@@ -40,11 +40,13 @@ void test('terminal tool activity clears only the matching pending approval and 
   const withApprovals = reduceRunSessionState(
     reduceRunSessionState(running, {
       type: 'approval_requested',
+      runId: RUN_ID,
       threadId: THREAD_ID_VALUE,
       pendingApproval: firstApproval,
     }),
     {
       type: 'approval_requested',
+      runId: RUN_ID,
       threadId: THREAD_ID_VALUE,
       pendingApproval: secondApproval,
     },

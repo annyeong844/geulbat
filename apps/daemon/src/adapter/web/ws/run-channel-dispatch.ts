@@ -20,6 +20,7 @@ import {
   handleRunInterject,
   handleRunInterjectCancel,
   handleRunInterjectFlush,
+  handleRunProviderRequestRecovery,
 } from './run-channel-control.js';
 import { handleRunTool } from './run-channel-tool.js';
 import {
@@ -168,6 +169,15 @@ export async function handleClientMessage(
           runtimeContext,
         );
         return;
+      case 'run.provider_request.recover':
+        await handleRunProviderRequestRecovery(
+          socket,
+          requestId,
+          message.request,
+          runtimeContext,
+          socketState.computerSessionId,
+        );
+        return;
       case 'run.interject':
         await handleRunInterject(
           socket,
@@ -286,6 +296,12 @@ function buildDispatchLogContext(
         messageType: message.type,
         requestId: message.requestId,
         runId: message.request.runId,
+        threadId: message.request.threadId,
+      };
+    case 'run.provider_request.recover':
+      return {
+        messageType: message.type,
+        requestId: message.requestId,
         threadId: message.request.threadId,
       };
     case 'run.interject':

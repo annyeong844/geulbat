@@ -33,7 +33,27 @@ const visualizeArgsSchema = z.strictObject({
     .describe(
       'Exact daemon-issued rendering identity when this widget explains a canonical plan draft.',
     ),
+  planStepIds: z
+    .array(z.string().trim().min(1))
+    .min(1)
+    .optional()
+    .describe(
+      'Canonical plan step ids represented by data-plan-step-id attributes in the widget, in exact draft order.',
+    ),
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function countPlanStepNodeMarkers(code: string, stepId: string): number {
+  const escapedStepId = escapeRegExp(stepId);
+  const marker = new RegExp(
+    `\\bdata-plan-step-id\\s*=\\s*(?:"${escapedStepId}"|'${escapedStepId}')`,
+    'gu',
+  );
+  return [...code.matchAll(marker)].length;
+}
 
 export const visualizeTool = defineZodTool({
   name: 'visualize',
@@ -89,6 +109,27 @@ export const visualizeTool = defineZodTool({
             `${PLAN_REVISION_APPROVAL_REQUIRED}: visualize plan rendering stamp is not current`,
           );
         }
+        if (args.planStepIds === undefined) {
+          return toolError(
+            'approval_required',
+            `${PLAN_APPROVAL_REQUIRED}: visualize must bind every canonical plan step`,
+          );
+        }
+        const expectedStepIds = current.draft.steps.map((step) => step.id);
+        if (
+          args.planStepIds.length !== expectedStepIds.length ||
+          args.planStepIds.some(
+            (stepId, index) => stepId !== expectedStepIds[index],
+          ) ||
+          args.planStepIds.some(
+            (stepId) => countPlanStepNodeMarkers(code, stepId) !== 1,
+          )
+        ) {
+          return toolError(
+            'approval_required',
+            `${PLAN_REVISION_APPROVAL_REQUIRED}: visualize plan step bindings do not match the current canonical draft`,
+          );
+        }
       }
     }
     const mode = code.toLowerCase().startsWith('<svg') ? 'svg' : 'html';
@@ -101,6 +142,9 @@ export const visualizeTool = defineZodTool({
           ? { title: args.title.trim() }
           : {}),
         ...(args.planStamp === undefined ? {} : { planStamp: args.planStamp }),
+        ...(args.planStepIds === undefined
+          ? {}
+          : { planStepIds: args.planStepIds }),
       }),
     };
   },

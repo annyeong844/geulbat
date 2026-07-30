@@ -28,14 +28,16 @@ export function resolveComputerFileToolPath(
 ): ComputerFileToolPath {
   const absoluteRoot = requireComputerFileRoot(ctx);
   const projectedInputPath = projectLocalWslUncPath(absoluteRoot, inputPath);
-  const projectedWorkingDirectory = projectLocalWslUncPath(
-    absoluteRoot,
-    ctx.workingDirectory ?? '',
-  );
   const candidatePath = isAbsolutePath(projectedInputPath)
     ? projectedInputPath
     : joinPortablePath(
-        normalizePath(absoluteRoot, projectedWorkingDirectory),
+        normalizePath(
+          absoluteRoot,
+          projectLocalWslUncPath(
+            absoluteRoot,
+            requireWorkingDirectory(ctx.workingDirectory),
+          ),
+        ),
         projectedInputPath,
         absoluteRoot,
       );
@@ -45,6 +47,16 @@ export function resolveComputerFileToolPath(
     absoluteRoot,
     path: normalizePath(absoluteRoot, candidatePath),
   };
+}
+
+function requireWorkingDirectory(workingDirectory: string | undefined): string {
+  if (workingDirectory === undefined) {
+    throw new FileAccessError(
+      'access_denied',
+      'a working directory is required for relative file paths',
+    );
+  }
+  return workingDirectory;
 }
 
 function projectLocalWslUncPath(

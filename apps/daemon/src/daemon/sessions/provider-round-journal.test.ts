@@ -38,7 +38,7 @@ void test('provider round journal appends exact private provider items', async (
   };
 
   try {
-    const record = await appendProviderRound({
+    const appended = await appendProviderRound({
       stateRoot,
       threadId,
       runId,
@@ -49,10 +49,12 @@ void test('provider round journal appends exact private provider items', async (
       functionCalls: [],
       now: () => '2026-07-18T00:00:00.000Z',
     });
+    const { record } = appended;
 
     assert.deepEqual(await readProviderRoundHistory(stateRoot, threadId), [
       record,
     ]);
+    assert.equal(appended.changed, true);
     assert.equal(record.items[0], item);
     assert.equal(
       (await stat(providerRoundJournalPath(stateRoot, threadId))).mode & 0o777,
@@ -60,6 +62,65 @@ void test('provider round journal appends exact private provider items', async (
     );
     assert.equal(await deleteThreadSession(stateRoot, threadId), true);
     assert.deepEqual(await readProviderRoundHistory(stateRoot, threadId), []);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('provider round journal settles one logical model response exactly once', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-provider-round-'));
+  const threadId = testThreadId(707);
+  const identity = `sha256:${'7'.repeat(64)}` as const;
+  const args = {
+    stateRoot,
+    threadId,
+    runId: testRunId(707),
+    round: 0,
+    ...PROVIDER_TARGET,
+    precedingTranscriptEntryId: null,
+    items: [
+      {
+        id: 'reasoning-707',
+        type: 'reasoning',
+        encrypted_content: 'settled-provider-state',
+        summary: [],
+      },
+    ],
+    functionCalls: [],
+    modelSettlementIdentity: identity,
+  } as const;
+
+  try {
+    const first = await appendProviderRound({
+      ...args,
+      now: () => '2026-07-18T00:00:00.000Z',
+    });
+    const replay = await appendProviderRound({
+      ...args,
+      now: () => '2026-07-19T00:00:00.000Z',
+    });
+
+    assert.equal(first.changed, true);
+    assert.equal(replay.changed, false);
+    assert.deepEqual(replay.record, first.record);
+    assert.equal(
+      (await readProviderRoundHistory(stateRoot, threadId)).length,
+      1,
+    );
+    await assert.rejects(
+      appendProviderRound({
+        ...args,
+        items: [
+          {
+            id: 'reasoning-707-divergent',
+            type: 'reasoning',
+            encrypted_content: 'different-provider-state',
+            summary: [],
+          },
+        ],
+      }),
+      /provider round settlement identity conflict/u,
+    );
   } finally {
     await rm(stateRoot, { recursive: true, force: true });
   }
@@ -77,7 +138,7 @@ void test('provider round journal accepts a function-call-only provider batch', 
   };
 
   try {
-    const record = await appendProviderRound({
+    const { record } = await appendProviderRound({
       stateRoot,
       threadId: testThreadId(705),
       runId: testRunId(705),
@@ -107,7 +168,7 @@ void test('provider round journal rejects an unknown tool recovery strategy', as
   const threadId = testThreadId(706);
 
   try {
-    const record = await appendProviderRound({
+    const { record } = await appendProviderRound({
       stateRoot,
       threadId,
       runId: testRunId(706),

@@ -57,24 +57,15 @@ export function PluginMarketplacePanel({
   );
   const [filterOpen, setFilterOpen] = useState(false);
 
-  const {
-    catalog,
-    loadStatus,
-    officialStatus,
-    error,
-    busy,
-    canUninstall,
-    addSource,
-    install,
-    uninstall,
-    removeSource,
-  } = usePluginMarketplaceController({
+  const marketplace = usePluginMarketplaceController({
     client,
     disabled,
     refreshToken,
     onInstalled,
     onUninstalled,
   });
+  const { catalog, loadStatus, officialStatus, error, busy, canUninstall } =
+    marketplace;
 
   const submitSource = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -83,7 +74,7 @@ export function PluginMarketplacePanel({
     if (!url || disabled || busy || loadStatus !== 'loaded') {
       return;
     }
-    const added = await addSource({
+    const added = await marketplace.addSource({
       sourceKind: 'git',
       url,
       ...(ref ? { ref } : {}),
@@ -96,7 +87,7 @@ export function PluginMarketplacePanel({
   };
 
   const handleRemoveSource = async (marketplaceId: string) => {
-    if (await removeSource(marketplaceId)) {
+    if (await marketplace.removeSource(marketplaceId)) {
       setConfirmRemoveId(null);
     }
   };
@@ -157,7 +148,9 @@ export function PluginMarketplacePanel({
             onManage: () => onManageInstalled(installationId),
           }
         : {}),
-      ...(canUninstall ? { onUninstall: () => void uninstall(entry) } : {}),
+      ...(canUninstall
+        ? { onUninstall: () => void marketplace.uninstall(entry) }
+        : {}),
     };
   };
 
@@ -386,7 +379,7 @@ export function PluginMarketplacePanel({
                 key={`${entry.marketplaceId}/${entry.entryId}`}
                 entry={entry}
                 disabled={disabled || busy}
-                onInstall={() => void install(entry)}
+                onInstall={() => void marketplace.install(entry)}
                 {...entryActions(entry)}
               />
             ))}
@@ -409,7 +402,7 @@ export function PluginMarketplacePanel({
                     key={`${entry.marketplaceId}/${entry.entryId}`}
                     entry={entry}
                     disabled={disabled || busy}
-                    onInstall={() => void install(entry)}
+                    onInstall={() => void marketplace.install(entry)}
                     {...entryActions(entry)}
                   />
                 ))}
@@ -448,7 +441,7 @@ export function PluginMarketplacePanel({
                         key={`${entry.marketplaceId}/${entry.entryId}`}
                         entry={entry}
                         disabled={disabled || busy}
-                        onInstall={() => void install(entry)}
+                        onInstall={() => void marketplace.install(entry)}
                         {...entryActions(entry)}
                       />
                     ))}

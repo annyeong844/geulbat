@@ -312,7 +312,7 @@ void test('isApprovalPreflightCurrent rejects an apply_patch file symlink swap',
   const toolArgs = { patch: makeUpdatePatch('draft.md') };
   const preflight = await collectPreflight(
     'apply_patch',
-    { computerFileRoot },
+    { computerFileRoot, workingDirectory: '' },
     toolArgs,
   );
   assert.ok(preflight);
@@ -325,7 +325,7 @@ void test('isApprovalPreflightCurrent rejects an apply_patch file symlink swap',
   assert.equal(
     await isApprovalPreflightCurrent(
       'apply_patch',
-      { computerFileRoot },
+      { computerFileRoot, workingDirectory: '' },
       toolArgs,
       preflight,
     ),
@@ -346,7 +346,7 @@ void test('isApprovalPreflightCurrent rejects an apply_patch parent symlink swap
   const toolArgs = { patch: makeUpdatePatch('sub/draft.md') };
   const preflight = await collectPreflight(
     'apply_patch',
-    { computerFileRoot },
+    { computerFileRoot, workingDirectory: '' },
     toolArgs,
   );
   assert.ok(preflight);
@@ -359,7 +359,7 @@ void test('isApprovalPreflightCurrent rejects an apply_patch parent symlink swap
   assert.equal(
     await isApprovalPreflightCurrent(
       'apply_patch',
-      { computerFileRoot },
+      { computerFileRoot, workingDirectory: '' },
       toolArgs,
       preflight,
     ),
@@ -378,7 +378,7 @@ void test('isApprovalPreflightCurrent rejects a parent symlink swap', async (t) 
   const toolArgs = { path: 'sub/draft.md' };
   const preflight = await collectPreflight(
     'manage_files',
-    { computerFileRoot },
+    { computerFileRoot, workingDirectory: '' },
     toolArgs,
   );
   assert.ok(preflight);
@@ -391,7 +391,7 @@ void test('isApprovalPreflightCurrent rejects a parent symlink swap', async (t) 
   assert.equal(
     await isApprovalPreflightCurrent(
       'manage_files',
-      { computerFileRoot },
+      { computerFileRoot, workingDirectory: '' },
       toolArgs,
       preflight,
     ),

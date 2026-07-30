@@ -305,6 +305,12 @@ void test(
     const firstRuntime = boundary.createRuntime();
     const firstTransport = createTransport(firstRuntime, boundary.stateRoot);
     const shutdown = new AbortController();
+    let preparedRequestIdentity: string | undefined;
+    const preparedSnapshots: {
+      requestIdentity: string;
+      resumed: boolean;
+      dispatchCount: number;
+    }[] = [];
     const request: ResponsesDurableRequestStreamArgs = {
       webSocketUrl: boundary.webSocketUrl,
       headers: new Headers({
@@ -317,6 +323,14 @@ void test(
       }),
       providerSessionId: 'thread-provider-session',
       requestAttempt: 0,
+      onPrepared(snapshot) {
+        preparedRequestIdentity = snapshot.requestIdentity;
+        preparedSnapshots.push({
+          requestIdentity: snapshot.requestIdentity,
+          resumed: snapshot.resumed,
+          dispatchCount: boundary.dispatchCount(),
+        });
+      },
       signal: shutdown.signal,
     };
     const first = firstTransport.streamEvents(request)[Symbol.asyncIterator]();
@@ -331,6 +345,18 @@ void test(
       done: false,
       value: firstEvent,
     });
+    assert.notEqual(preparedRequestIdentity, undefined);
+    if (preparedRequestIdentity === undefined) {
+      throw new Error('durable request preparation identity was not observed');
+    }
+    const resumeRequestIdentity = preparedRequestIdentity;
+    assert.deepEqual(preparedSnapshots, [
+      {
+        requestIdentity: resumeRequestIdentity,
+        resumed: false,
+        dispatchCount: 0,
+      },
+    ]);
     shutdown.abort('daemon_shutdown');
     await assert.rejects(first.next());
     await boundary.closeRuntime(firstRuntime);
@@ -340,7 +366,11 @@ void test(
       replacementRuntime,
       boundary.stateRoot,
     );
-    const replacementRequest = withoutSignal(request);
+    const replacementRequest = {
+      ...withoutSignal(request),
+      serializedPayload: '{"reconstructed":"payload may drift after restart"}',
+      resumeRequestIdentity,
+    };
     const replacement = replacementTransport
       .streamEvents(replacementRequest)
       [Symbol.asyncIterator]();
@@ -348,6 +378,11 @@ void test(
     assert.deepEqual(await replacement.next(), {
       done: false,
       value: firstEvent,
+    });
+    assert.deepEqual(preparedSnapshots.at(-1), {
+      requestIdentity: resumeRequestIdentity,
+      resumed: true,
+      dispatchCount: 1,
     });
     releaseProvider();
     const secondEvent = {
@@ -379,6 +414,143 @@ void test(
       'the terminal artifact remains replayable after the live owner exits',
     );
     assert.equal(boundary.dispatchCount(), 1);
+  },
+);
+
+void test(
+  'a replacement daemon resumes the prepared request before its first provider byte',
+  { timeout: 30_000 },
+  async (t) => {
+    let releaseProvider: () => void = () => undefined;
+    const continueProvider = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let observeDispatch: () => void = () => undefined;
+    const dispatched = new Promise<void>((resolve) => {
+      observeDispatch = resolve;
+    });
+    const boundary = await createProviderBoundary(
+      t,
+      'geulbat-provider-request-before-first-byte-',
+      (socket) => {
+        observeDispatch();
+        void continueProvider.then(() => {
+          socket.send(
+            JSON.stringify({
+              type: 'response.output_text.delta',
+              delta: 'resumed',
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              type: 'response.completed',
+              response: { usage: { input_tokens: 1, output_tokens: 1 } },
+            }),
+          );
+        });
+      },
+    );
+    t.after(releaseProvider);
+
+    const firstRuntime = boundary.createRuntime();
+    const firstTransport = createTransport(firstRuntime, boundary.stateRoot);
+    const shutdown = new AbortController();
+    let observePrepared: (requestIdentity: string) => void = () => undefined;
+    const prepared = new Promise<string>((resolve) => {
+      observePrepared = resolve;
+    });
+    const request: ResponsesDurableRequestStreamArgs = {
+      webSocketUrl: boundary.webSocketUrl,
+      headers: new Headers({
+        Authorization: 'Bearer private-token',
+        'Content-Type': 'application/json',
+      }),
+      serializedPayload: JSON.stringify({
+        type: 'response.create',
+        model: 'test-model',
+      }),
+      providerSessionId: 'thread-before-first-byte',
+      requestAttempt: 0,
+      onPrepared(snapshot) {
+        observePrepared(snapshot.requestIdentity);
+      },
+      signal: shutdown.signal,
+    };
+    const first = firstTransport.streamEvents(request)[Symbol.asyncIterator]();
+    const firstEvent = first.next();
+    const requestIdentity = await prepared;
+    assert.equal(boundary.dispatchCount(), 0);
+
+    await dispatched;
+    assert.equal(boundary.dispatchCount(), 1);
+    shutdown.abort('daemon_shutdown');
+    await assert.rejects(firstEvent);
+    await boundary.closeRuntime(firstRuntime);
+
+    const replacementRuntime = boundary.createRuntime();
+    const replacementTransport = createTransport(
+      replacementRuntime,
+      boundary.stateRoot,
+    );
+    releaseProvider();
+    assert.deepEqual(
+      await collectEvents(
+        replacementTransport.streamEvents({
+          ...withoutSignal(request),
+          resumeRequestIdentity: requestIdentity,
+        }),
+      ),
+      [
+        { type: 'response.output_text.delta', delta: 'resumed' },
+        {
+          type: 'response.completed',
+          response: { usage: { input_tokens: 1, output_tokens: 1 } },
+        },
+      ],
+    );
+    assert.equal(boundary.dispatchCount(), 1);
+  },
+);
+
+void test(
+  'a pinned active boundary refuses redispatch when its durable coordinate is missing',
+  { timeout: 30_000 },
+  async (t) => {
+    const stateRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-provider-request-missing-boundary-'),
+    );
+    const runtime = createWorkerRuntime();
+    const transport = createTransport(runtime, stateRoot);
+    t.after(async () => {
+      await runtime.closeAll().catch(() => undefined);
+      await removeCommandHostWorkspace(stateRoot);
+    });
+
+    await assert.rejects(
+      collectEvents(
+        transport.streamEvents({
+          webSocketUrl: 'ws://127.0.0.1:1/responses',
+          headers: new Headers({
+            Authorization: 'Bearer private-token',
+          }),
+          serializedPayload: '{"type":"response.create"}',
+          providerSessionId: 'thread-missing-active-boundary',
+          requestAttempt: 0,
+          resumeRequestIdentity: 'e'.repeat(64),
+        }),
+      ),
+      (error: unknown) => {
+        assert.equal(
+          Reflect.get(error ?? {}, 'llmCode'),
+          'llm_provider_request_outcome_unknown',
+        );
+        assert.match(
+          error instanceof Error ? error.message : '',
+          /active model round provider request coordinate is unavailable/u,
+        );
+        return true;
+      },
+    );
   },
 );
 
@@ -442,6 +614,34 @@ void test(
       assertOutcomeUnknown,
     );
     assert.equal(boundary.dispatchCount(), 1);
+
+    assert.deepEqual(
+      await transport.recoverOutcomeUnknown({
+        providerSessionId: request.providerSessionId,
+        authorizedByComputerSessionId: 'computer-command-host-loss',
+        acknowledgePossibleDuplicateProviderWork: true,
+      }),
+      { ok: true, disposition: 'abandoned' },
+    );
+    const releasedOutputs = await transport.activeOutputRefs(
+      boundary.stateRoot,
+    );
+    assert.deepEqual(releasedOutputs, {
+      ok: true,
+      refs: new Set(),
+    });
+
+    // 동일 요청을 몰래 재전송하지 않는다. 위의 명시적 승인 뒤 새 attempt가
+    // 들어와야만 두 번째 provider dispatch가 생긴다.
+    const successor = transport
+      .streamEvents({ ...request, requestAttempt: 1 })
+      [Symbol.asyncIterator]();
+    assert.equal(
+      (await successor.next()).value?.['delta'],
+      'before command-host loss',
+    );
+    assert.equal(boundary.dispatchCount(), 2);
+    await successor.return?.();
 
     function assertOutcomeUnknown(error: unknown): boolean {
       assert.ok(error instanceof Error);
@@ -640,6 +840,7 @@ void test(
   { timeout: 30_000 },
   async (t) => {
     let resolveProviderClosed: () => void = () => undefined;
+    let providerClosedBeforeCancellationSettled = false;
     const providerClosed = new Promise<void>((resolve) => {
       resolveProviderClosed = resolve;
     });
@@ -647,7 +848,10 @@ void test(
       t,
       'geulbat-provider-request-abort-',
       (socket) => {
-        socket.once('close', resolveProviderClosed);
+        socket.once('close', () => {
+          providerClosedBeforeCancellationSettled = true;
+          resolveProviderClosed();
+        });
         socket.send(
           JSON.stringify({
             type: 'response.output_text.delta',
@@ -678,6 +882,7 @@ void test(
     controller.abort('user_interrupt');
 
     await assert.rejects(pending);
+    assert.equal(providerClosedBeforeCancellationSettled, true);
     await providerClosed;
     assert.deepEqual(
       await readdir(
@@ -755,6 +960,7 @@ function createTransport(
 ): ReturnType<typeof createHostRoutedResponsesRequestTransport> {
   return createHostRoutedResponsesRequestTransport({
     stateRoot,
+    workerCommand: responsesRequestWorkerCommand(),
     startProcess: createHostRoutedDetachedProcessStarter({
       hostCommands,
       stateRoot,
@@ -795,6 +1001,21 @@ function commandHostWorkerCommand(): NodeModuleCommand {
   );
   const built = fileURLToPath(
     new URL('../../../../command-host/main.js', import.meta.url),
+  );
+  return existsSync(built)
+    ? { execPath: process.execPath, args: [built] }
+    : {
+        execPath: process.execPath,
+        args: ['--import', fileURLToPath(import.meta.resolve('tsx')), source],
+      };
+}
+
+function responsesRequestWorkerCommand(): NodeModuleCommand {
+  const source = fileURLToPath(
+    new URL('./responses-durable-request-host-main.ts', import.meta.url),
+  );
+  const built = fileURLToPath(
+    new URL('./responses-durable-request-host-main.js', import.meta.url),
   );
   return existsSync(built)
     ? { execPath: process.execPath, args: [built] }

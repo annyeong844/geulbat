@@ -54,16 +54,18 @@ import {
 } from './provider-replay-scope.js';
 import type { ProviderRequestOptions } from './provider-options.js';
 import { ProviderHistoryItemInvalidError } from './transport/responses-wire-input.js';
+import type { DurableProviderRequestPreparedHandler } from './transport/responses-durable-request.js';
 import {
   streamResponsesOverWebSocket,
   type ResponsesRequestPreparedHandler,
   type ResponsesWireDiscoverySink,
 } from './transport/responses-websocket.js';
 import { resolveCodexResponsesUrl } from './transport/responses-websocket-url.js';
-import type {
-  ResponsesWebSocketAdmissionObserver,
-  ResponsesWebSocketReusePolicy,
-  ResponsesWebSocketSessionStore,
+import {
+  readRetryAfterMs,
+  type ResponsesWebSocketAdmissionObserver,
+  type ResponsesWebSocketReusePolicy,
+  type ResponsesWebSocketSessionStore,
 } from './transport/responses-websocket-cache.js';
 import type {
   HistoryItem,
@@ -113,7 +115,12 @@ export type LLMChunk =
       providerUsageTelemetry?: ProviderUsageTelemetry;
       stopReason?: ModelRoundStopReason;
     }
-  | { type: 'error'; code: string; message: string };
+  | {
+      type: 'error';
+      code: string;
+      message: string;
+      retryAfterMs?: number;
+    };
 
 export type ProviderRuntimeObservation =
   | { state: 'auth_waiting' }
@@ -134,6 +141,7 @@ export interface CallModelInput {
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
     | 'acquireWebSocket'
+    | 'deferProviderRequests'
     | 'streamDurableResponseEvents'
     | 'streamDurableHttpSseEvents'
   >;
@@ -142,7 +150,13 @@ export interface CallModelInput {
   providerReplayScopeId?: ProviderReplayScopeId;
   oauthWireDiscoverySink?: ResponsesWireDiscoverySink;
   onProviderRequestPrepared?: ResponsesRequestPreparedHandler;
+  resumeProviderRequestIdentity?: string;
+  onDurableProviderRequestPrepared?: DurableProviderRequestPreparedHandler;
   onProviderRuntimeState?: ProviderRuntimeObserver;
+  resolveProviderAdmissionFallbackDelayMs?: (failure: {
+    error: unknown;
+    sawSemanticChunk: boolean;
+  }) => number | undefined;
   signal?: AbortSignal;
 }
 
@@ -248,6 +262,7 @@ export async function* callModelWithDependencies(
     .catch((err: unknown) => {
       const code = normalizeProviderErrorCode(err);
       const message = sanitizeProviderErrorMessage(code);
+      const retryAfterMs = readRetryAfterMs(err);
       if (code === 'aborted') {
         providerLogger.info('provider stream aborted');
       } else {
@@ -256,7 +271,12 @@ export async function* callModelWithDependencies(
           cause: err,
         });
       }
-      channel.push({ type: 'error', code, message });
+      channel.push({
+        type: 'error',
+        code,
+        message,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      });
       channel.finish();
     });
 
@@ -281,7 +301,11 @@ export async function* callModelWithDependencies(
 interface CallResponsesOnceOptions {
   allowRefresh?: boolean;
   onAssistantDeltaCommitted?: () => void;
+  resolveProviderAdmissionFallbackDelayMs?: (
+    error: unknown,
+  ) => number | undefined;
   requestAttempt?: number;
+  resumeRequestIdentity?: string;
 }
 
 function buildProviderStreamCallbacks(
@@ -289,7 +313,9 @@ function buildProviderStreamCallbacks(
   options?: CallResponsesOnceOptions,
 ): Pick<
   Parameters<typeof streamResponsesOverWebSocket>[0],
-  'onAssistantDelta' | 'onFunctionCallArgsDelta'
+  | 'onAssistantDelta'
+  | 'onFunctionCallArgsDelta'
+  | 'resolveProviderAdmissionFallbackDelayMs'
 > {
   return {
     onAssistantDelta: (delta) => {
@@ -314,6 +340,12 @@ function buildProviderStreamCallbacks(
       // committed로 취급한다.
       options?.onAssistantDeltaCommitted?.();
     },
+    ...(options?.resolveProviderAdmissionFallbackDelayMs === undefined
+      ? {}
+      : {
+          resolveProviderAdmissionFallbackDelayMs:
+            options.resolveProviderAdmissionFallbackDelayMs,
+        }),
   };
 }
 
@@ -383,12 +415,20 @@ async function callQwenResponsesOnce(
     providerReplayScopeId,
     providerSessionId: input.providerSessionId,
     requestAttempt: options?.requestAttempt ?? 0,
+    ...(options?.resumeRequestIdentity === undefined
+      ? {}
+      : { resumeRequestIdentity: options.resumeRequestIdentity }),
     providerRequestSessions: input.providerWebSocketSessions,
     ...(instructions === undefined ? {} : { instructions }),
     ...(input.tools === undefined ? {} : { tools: input.tools }),
     ...(input.onProviderRequestPrepared === undefined
       ? {}
       : { onRequestPrepared: input.onProviderRequestPrepared }),
+    ...(input.onDurableProviderRequestPrepared === undefined
+      ? {}
+      : {
+          onDurableRequestPrepared: input.onDurableProviderRequestPrepared,
+        }),
     ...(input.onProviderRuntimeState === undefined
       ? {}
       : {
@@ -462,6 +502,9 @@ async function callCodexDirectResponsesOnce(
     providerReplayScopeId,
     providerSessionId: input.providerSessionId,
     requestAttempt: options?.requestAttempt ?? 0,
+    ...(options?.resumeRequestIdentity === undefined
+      ? {}
+      : { resumeRequestIdentity: options.resumeRequestIdentity }),
     webSocketReusePolicy: CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
     providerWebSocketSessions: input.providerWebSocketSessions,
     ...(input.oauthWireDiscoverySink !== undefined
@@ -469,6 +512,11 @@ async function callCodexDirectResponsesOnce(
       : {}),
     ...(input.onProviderRequestPrepared !== undefined
       ? { onRequestPrepared: input.onProviderRequestPrepared }
+      : {}),
+    ...(input.onDurableProviderRequestPrepared !== undefined
+      ? {
+          onDurableRequestPrepared: input.onDurableProviderRequestPrepared,
+        }
       : {}),
     ...(input.onProviderRuntimeState !== undefined
       ? { onAdmissionState: createProviderAdmissionObserver(input) }
@@ -537,6 +585,9 @@ async function callGrokOAuthResponsesOnce(
       providerReplayScopeId,
       providerSessionId: input.providerSessionId,
       requestAttempt: options?.requestAttempt ?? 0,
+      ...(options?.resumeRequestIdentity === undefined
+        ? {}
+        : { resumeRequestIdentity: options.resumeRequestIdentity }),
       history: input.history,
       reasoningEffort: input.providerRequestOptions.reasoning.effort,
       providerWebSocketSessions: input.providerWebSocketSessions,
@@ -545,6 +596,11 @@ async function callGrokOAuthResponsesOnce(
         : {}),
       ...(input.onProviderRequestPrepared !== undefined
         ? { onRequestPrepared: input.onProviderRequestPrepared }
+        : {}),
+      ...(input.onDurableProviderRequestPrepared !== undefined
+        ? {
+            onDurableRequestPrepared: input.onDurableProviderRequestPrepared,
+          }
         : {}),
       ...(input.onProviderRuntimeState !== undefined
         ? { onAdmissionState: createProviderAdmissionObserver(input) }
@@ -684,6 +740,19 @@ async function callResponsesWithRetryPolicy(
       onAssistantDeltaCommitted: () => {
         assistantDeltaCommitted = true;
       },
+      ...(input.resolveProviderAdmissionFallbackDelayMs === undefined
+        ? {}
+        : {
+            resolveProviderAdmissionFallbackDelayMs: (error: unknown) =>
+              input.resolveProviderAdmissionFallbackDelayMs?.({
+                error,
+                sawSemanticChunk: assistantDeltaCommitted,
+              }),
+          }),
+      ...(authRefreshAttempts === 0 &&
+      input.resumeProviderRequestIdentity !== undefined
+        ? { resumeRequestIdentity: input.resumeProviderRequestIdentity }
+        : {}),
     };
     if (authRefreshAttempts > 0) {
       attemptOptions.allowRefresh = false;

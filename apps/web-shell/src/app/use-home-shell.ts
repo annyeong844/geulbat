@@ -80,9 +80,17 @@ export function useHomeShell({
     [],
   );
   const selectWorkingDirectory = useCallback(
-    (path: string) => {
+    (path: string | null) => {
       setWorkingDirectory(path);
+      if (path === null) {
+        return;
+      }
       navigateIntoBrowseDirectory(path);
+      if (path === '') {
+        // 빈 portable coordinate는 컴퓨터 루트다. 세션 CWD로는 유효하지만
+        // 최근 폴더에 저장할 실제 하위 경로는 아니다.
+        return;
+      }
       // daemon preference의 select verb는 최근 경로 목록도 함께 갱신한다.
       // 다음 새 세션의 cwd는 이 전역 편의값을 상속하지 않는다.
       void applyDirectoryPreference('select', path)
@@ -131,6 +139,7 @@ export function useHomeShell({
     recentFiles: files.recentFiles,
     openFile: files.openFile,
     removeRecentFile: files.removeRecentFile,
+    fileMutationGeneration: files.mutationGeneration,
     // draft → 버전 커밋 결과를 로컬 아티팩트 상태에 즉시 반영하는 핸들
     upsertThreadArtifactVersion: threads.upsertThreadArtifactVersion,
   };

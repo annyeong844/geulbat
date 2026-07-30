@@ -2,8 +2,12 @@ import { parseDaemonArtifactCandidateText } from '../../../artifact-candidate.js
 import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
 import { isRecord } from '../../../runtime-json.js';
 import { hashProviderTraceIdentity } from '../provider-cache-projection.js';
+import type { DurableProviderRequestPreparedHandler } from '../transport/responses-durable-request.js';
 import type { ResponsesRequestPreparedHandler } from '../transport/responses-websocket.js';
-import type { ResponsesWebSocketSessionStore } from '../transport/responses-websocket-cache.js';
+import type {
+  ProviderAdmissionFallbackDelayResolver,
+  ResponsesWebSocketSessionStore,
+} from '../transport/responses-websocket-cache.js';
 import { iterateJsonServerSentEvents } from '../transport/json-server-sent-events.js';
 import type {
   CallResult,
@@ -36,9 +40,10 @@ export interface QwenChatCompletionsInput extends QwenStreamCallbacks {
   providerReplayScopeId: ProviderReplayScopeId;
   providerSessionId?: string;
   requestAttempt?: number;
+  resumeRequestIdentity?: string;
   providerRequestSessions?: Pick<
     ResponsesWebSocketSessionStore,
-    'streamDurableHttpSseEvents'
+    'deferProviderRequests' | 'streamDurableHttpSseEvents'
   >;
   instructions?: string;
   tools?: WireToolDefinition[];
@@ -46,7 +51,9 @@ export interface QwenChatCompletionsInput extends QwenStreamCallbacks {
   maxTokens?: number;
   signal?: AbortSignal;
   onRequestPrepared?: ResponsesRequestPreparedHandler;
+  onDurableRequestPrepared?: DurableProviderRequestPreparedHandler;
   onProviderWaiting?: () => void;
+  resolveProviderAdmissionFallbackDelayMs?: ProviderAdmissionFallbackDelayResolver;
 }
 
 interface QwenChatCompletionsDependencies {
@@ -130,9 +137,23 @@ export async function streamQwenChatCompletions(
   for await (const event of events) {
     const error = isRecord(event['error']) ? event['error'] : undefined;
     if (error !== undefined) {
-      throw new QwenStreamError('Qwen event stream reported an error', {
-        cause: error,
-      });
+      const streamError = new QwenStreamError(
+        'Qwen event stream reported an error',
+        {
+          cause: error,
+        },
+      );
+      const fallbackDelayMs =
+        input.providerRequestSessions?.deferProviderRequests === undefined
+          ? undefined
+          : input.resolveProviderAdmissionFallbackDelayMs?.(streamError);
+      if (fallbackDelayMs !== undefined) {
+        input.providerRequestSessions?.deferProviderRequests?.(
+          input.config.chatCompletionsUrl,
+          fallbackDelayMs,
+        );
+      }
+      throw streamError;
     }
     if (typeof event['id'] === 'string' && event['id'].trim() !== '') {
       responseId = event['id'];
@@ -341,7 +362,19 @@ function streamQwenEvents(args: {
       serializedPayload: args.serializedBody,
       providerSessionId: args.input.providerSessionId,
       requestAttempt: args.input.requestAttempt ?? 0,
+      ...(args.input.resumeRequestIdentity === undefined
+        ? {}
+        : { resumeRequestIdentity: args.input.resumeRequestIdentity }),
+      ...(args.input.onDurableRequestPrepared === undefined
+        ? {}
+        : { onPrepared: args.input.onDurableRequestPrepared }),
       ...(args.input.signal === undefined ? {} : { signal: args.input.signal }),
+      ...(args.input.resolveProviderAdmissionFallbackDelayMs === undefined
+        ? {}
+        : {
+            resolveProviderAdmissionFallbackDelayMs:
+              args.input.resolveProviderAdmissionFallbackDelayMs,
+          }),
     });
   }
   return streamDirectQwenEvents(args);

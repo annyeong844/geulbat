@@ -485,6 +485,63 @@ void test('streamResponsesOverWebSocket forwards provider Retry-After evidence t
   ]);
 });
 
+void test('streamResponsesOverWebSocket defers a Retry-After-less stream failure before releasing durable admission', async () => {
+  const order: string[] = [];
+
+  await assert.rejects(
+    streamResponsesOverWebSocket({
+      body: baseBody,
+      headers: new Headers(),
+      historyProjection: 'provider_output',
+      history: [],
+      providerSessionId: 'provider-session',
+      webSocketUrl: 'wss://api.example.test/v1/responses',
+      webSocketReusePolicy: TEST_REUSE_POLICY,
+      providerWebSocketSessions: {
+        async acquireWebSocket() {
+          throw new Error('direct socket path must not run');
+        },
+        async *streamDurableResponseEvents(input) {
+          assert.equal(
+            typeof input.resolveProviderAdmissionFallbackDelayMs,
+            'function',
+          );
+          try {
+            yield {
+              type: 'response.failed',
+              response: {
+                error: {
+                  message: 'rate limit reached',
+                },
+              },
+            };
+          } finally {
+            order.push('admission_released');
+          }
+        },
+        deferProviderRequests(url, retryAfterMs) {
+          assert.equal(url, 'wss://api.example.test/v1/responses');
+          assert.equal(retryAfterMs, 3_456);
+          order.push('provider_deferred');
+        },
+      },
+      resolveProviderAdmissionFallbackDelayMs(error) {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, 'rate limit reached');
+        order.push('fallback_resolved');
+        return 3_456;
+      },
+    }),
+    /rate limit reached/u,
+  );
+
+  assert.deepEqual(order, [
+    'fallback_resolved',
+    'provider_deferred',
+    'admission_released',
+  ]);
+});
+
 void test('streamResponsesOverWebSocket measures the exact serialized request immediately before dispatch', async () => {
   const order: string[] = [];
   const admissionStates: string[] = [];

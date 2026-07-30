@@ -12,13 +12,12 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 
-export const TOOL_SDK_RELEASE_MANIFEST_FILENAME =
-  'tool-sdk-release-manifest-v1.json';
-export const TOOL_SDK_RELEASE_CHECKSUMS_FILENAME = 'SHA256SUMS';
+const TOOL_SDK_RELEASE_MANIFEST_FILENAME = 'tool-sdk-release-manifest-v1.json';
+const TOOL_SDK_RELEASE_CHECKSUMS_FILENAME = 'SHA256SUMS';
 export const TOOL_SDK_RELEASE_CONSUMER_FILENAME =
   'external-tool-sdk-daemon-consumer.mjs';
-export const TOOL_SDK_RELEASE_CHANNEL = 'public-github-release-attested-bundle';
-export const TOOL_SDK_RELEASE_QUALIFIED_NODE_MAJORS = Object.freeze([24, 26]);
+const TOOL_SDK_RELEASE_CHANNEL = 'public-github-release-attested-bundle';
+const TOOL_SDK_RELEASE_QUALIFIED_NODE_MAJORS = Object.freeze([24, 26]);
 
 export function assertToolSdkReleaseTag(releaseTag, toolSdkVersion) {
   const expected = `tool-sdk-v${toolSdkVersion}`;
@@ -53,7 +52,7 @@ export async function verifyReproduciblePackedPackages(options) {
   }
 }
 
-export async function createToolSdkReleaseManifest(options) {
+async function createToolSdkReleaseManifest(options) {
   const packages = [];
   let nodeEngines;
 

@@ -60,6 +60,7 @@ export async function runReactBundleExplicitCdnArtifactIngress(args: {
   timeoutMs?: number;
   signal?: AbortSignal;
   now?: () => string;
+  publicHttpRead?: ReactBundleDependencyProbeArgs['publicHttpRead'];
   probeTransport?: ReactBundleDependencyProbeArgs['probeTransport'];
   dockerCommandRunner?: ReactBundleDependencyProbeArgs['dockerCommandRunner'];
   acceptRuntimeManifest?: typeof acceptReactBundleRuntimeManifest;
@@ -102,6 +103,7 @@ export async function runReactBundleExplicitCdnArtifactIngress(args: {
         request: args.request,
         ...(args.now ? { now: args.now } : {}),
         ...(args.signal ? { signal: args.signal } : {}),
+        ...(args.publicHttpRead ? { publicHttpRead: args.publicHttpRead } : {}),
         ...(args.probeTransport ? { probeTransport: args.probeTransport } : {}),
         ...(args.dockerCommandRunner
           ? { dockerCommandRunner: args.dockerCommandRunner }

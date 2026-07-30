@@ -143,6 +143,10 @@ export default [
           pattern: ['apps/web-shell/src/features/editor/**'],
         },
         {
+          type: 'feature-git-review',
+          pattern: ['apps/web-shell/src/features/git-review/**'],
+        },
+        {
           type: 'feature-mcp',
           pattern: ['apps/web-shell/src/features/mcp/**'],
         },
@@ -181,7 +185,13 @@ export default [
             'apps/daemon/src/daemon/command-environment.ts',
             'apps/daemon/src/daemon/docker-client-command.ts',
             'apps/daemon/src/daemon/docker-host-command.ts',
+            'apps/daemon/src/daemon/git-inspection-command.ts',
+            'apps/daemon/src/daemon/git-logical-diff.ts',
+            'apps/daemon/src/daemon/git-review-observation.ts',
+            'apps/daemon/src/daemon/git-review-service.ts',
+            'apps/daemon/src/daemon/git-worktree-capture.ts',
             'apps/daemon/src/daemon/host-routed-command.ts',
+            'apps/daemon/src/daemon/host-routed-public-http-read.ts',
             'apps/daemon/src/daemon/host-routed-detached-process.ts',
             'apps/daemon/src/daemon/system-command.ts',
           ],
@@ -669,6 +679,7 @@ export default [
                     'feature-browser-live-session',
                     'feature-browser-share',
                     'feature-editor',
+                    'feature-git-review',
                     'feature-mcp',
                     'feature-plugins',
                     'feature-project-selector',
@@ -709,6 +720,7 @@ export default [
                     'feature-browser-live-session',
                     'feature-browser-share',
                     'feature-editor',
+                    'feature-git-review',
                     'feature-mcp',
                     'feature-plugins',
                     'feature-project-selector',
@@ -795,6 +807,19 @@ export default [
                     'structured-logger',
                     'web-shell-lib',
                     'feature-editor',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'feature-git-review' },
+              allow: {
+                to: {
+                  type: [
+                    'protocol',
+                    'structured-logger',
+                    'web-shell-lib',
+                    'feature-git-review',
                   ],
                 },
               },
@@ -1121,7 +1146,7 @@ export default [
               from: { type: 'daemon-media-contract' },
               allow: {
                 to: {
-                  type: ['protocol'],
+                  type: ['content-identity', 'protocol'],
                 },
               },
             },

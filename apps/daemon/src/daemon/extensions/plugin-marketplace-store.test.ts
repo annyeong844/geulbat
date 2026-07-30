@@ -1,104 +1,16 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import {
-  cp,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-  OFFICIAL_CODEX_MARKETPLACE_SOURCE,
-  createPluginMarketplaceStore as createProductPluginMarketplaceStore,
-} from './plugin-marketplace-store.js';
+  createMarketplaceFixture,
+  createPluginMarketplaceStore,
+} from '../../test-support/plugin-marketplace-store-test-support.js';
 import { PluginMarketplaceStoreError } from './plugin-marketplace-contract.js';
-import {
-  acquirePluginMarketplaceGitRepository,
-  type PluginMarketplaceCommandRunner,
-} from './plugin-marketplace-git.js';
 import { createPluginStore } from './plugin-store.js';
 import { PluginStoreError } from './plugin-store-contract.js';
-
-const runMarketplaceTestCommand: PluginMarketplaceCommandRunner = async (
-  args,
-) => {
-  const result = spawnSync(args.executable, [...args.args], {
-    encoding: 'utf8',
-    env: args.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  if (result.error) {
-    throw result.error;
-  }
-  return {
-    exitCode: result.status,
-    stdout: result.stdout,
-  };
-};
-
-function createPluginMarketplaceStore(
-  args: Parameters<typeof createProductPluginMarketplaceStore>[0],
-) {
-  return createProductPluginMarketplaceStore({
-    ...args,
-    runCommand: args.runCommand ?? runMarketplaceTestCommand,
-  });
-}
-
-void test('real Git acquisition resolves a detached local revision without repository hooks', async () => {
-  const fixture = await createMarketplaceFixture();
-  const checkoutRoot = join(fixture.root, 'checkout');
-  try {
-    await acquirePluginMarketplaceGitRepository({
-      repositoryRoot: checkoutRoot,
-      url: fixture.repositoryRoot,
-      requestedRef: null,
-      isolatedConfigRoot: join(fixture.root, 'git-runtime'),
-      runCommand: runMarketplaceTestCommand,
-    });
-    assert.equal(
-      await readFile(
-        join(checkoutRoot, '.agents', 'plugins', 'marketplace.json'),
-        'utf8',
-      ).then((value) => value.includes('fixture-marketplace')),
-      true,
-    );
-    assert.equal(
-      runGit(checkoutRoot, ['rev-parse', '--abbrev-ref', 'HEAD']),
-      'HEAD',
-    );
-  } finally {
-    await fixture.cleanup();
-  }
-});
-
-void test('Git acquisition fails closed without a daemon host command runner', async () => {
-  const root = await mkdtemp(
-    join(tmpdir(), 'geulbat-marketplace-unrouted-git-'),
-  );
-  try {
-    await assert.rejects(
-      acquirePluginMarketplaceGitRepository({
-        repositoryRoot: join(root, 'checkout'),
-        url: 'https://github.com/example/plugins.git',
-        requestedRef: null,
-        isolatedConfigRoot: join(root, 'git-runtime'),
-      }),
-      (error: unknown) =>
-        error instanceof PluginMarketplaceStoreError &&
-        error.code === 'invalid_request' &&
-        /requires the daemon host command runtime/u.test(error.message),
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
 
 void test('Git marketplace browse and install use exact managed bytes and sanitized provenance', async () => {
   const fixture = await createMarketplaceFixture({
@@ -219,72 +131,111 @@ void test('Git marketplace browse and install use exact managed bytes and saniti
   }
 });
 
-void test('Codex official marketplace is daemon-owned, idempotent, and migrates an existing snapshot', async () => {
-  const fixture = await createMarketplaceFixture({
-    marketplaceName: 'openai-curated',
-    marketplaceDisplayName: 'Codex official',
-  });
+void test('marketplace reload reuses its revision-pinned catalog but revalidates selected install bytes', async () => {
+  const fixture = await createMarketplaceFixture();
   const homeRoot = join(fixture.root, 'home');
-  let acquisitionCount = 0;
   const marketplaces = createPluginMarketplaceStore({
     homeStateRoot: homeRoot,
-    acquireGitRepository: async ({ repositoryRoot, url, requestedRef }) => {
-      acquisitionCount += 1;
-      assert.equal(url, OFFICIAL_CODEX_MARKETPLACE_SOURCE.url);
-      assert.equal(requestedRef, OFFICIAL_CODEX_MARKETPLACE_SOURCE.ref);
+    acquireGitRepository: async ({ repositoryRoot }) => {
       await cp(fixture.repositoryRoot, repositoryRoot, { recursive: true });
     },
   });
   try {
     await marketplaces.initialize();
-    const first = await marketplaces.ensureOfficialMarketplace();
-    const second = await marketplaces.ensureOfficialMarketplace();
-
-    assert.equal(first.marketplaceId, second.marketplaceId);
-    assert.equal(first.sourceRole, 'official');
-    assert.equal(acquisitionCount, 1);
-    assert.equal(marketplaces.list([]).entries.length, 1);
-    await assert.rejects(
-      marketplaces.remove(first.marketplaceId),
-      (error: unknown) =>
-        error instanceof PluginMarketplaceStoreError &&
-        error.code === 'conflict',
-    );
-    await assert.rejects(
-      marketplaces.add(OFFICIAL_CODEX_MARKETPLACE_SOURCE),
-      (error: unknown) =>
-        error instanceof PluginMarketplaceStoreError &&
-        error.code === 'conflict',
-    );
-
-    const registryPath = join(
+    const source = await marketplaces.add({
+      sourceKind: 'git',
+      url: 'https://github.com/example/plugins.git',
+      ref: 'main',
+    });
+    const originalEntry = marketplaces
+      .list([])
+      .entries.find((entry) => entry.entryId === 'workflow-helper');
+    assert.ok(originalEntry?.contentDigest);
+    const managedSourceRoot = join(
       homeRoot,
       'extensions',
       'marketplaces',
-      'registry.json',
+      'sources',
+      source.marketplaceId,
     );
-    const legacy = JSON.parse(await readFile(registryPath, 'utf8')) as {
-      schemaVersion: number;
-      sources: Array<Record<string, unknown>>;
-    };
-    legacy.schemaVersion = 1;
-    delete legacy.sources[0]?.['sourceRole'];
-    await writeFile(registryPath, `${JSON.stringify(legacy, null, 2)}\n`);
+    const cache = JSON.parse(
+      await readFile(join(managedSourceRoot, 'catalog-cache.json'), 'utf8'),
+    ) as { schemaVersion?: unknown };
+    assert.equal(cache.schemaVersion, 1);
+
+    const managedSkillPath = join(
+      managedSourceRoot,
+      'repository',
+      'plugins',
+      'workflow-helper',
+      'skills',
+      'workflow',
+      'SKILL.md',
+    );
+    await writeFile(
+      managedSkillPath,
+      `${await readFile(managedSkillPath, 'utf8')}\nLocally changed after catalog inspection.\n`,
+    );
 
     const reloaded = createPluginMarketplaceStore({
       homeStateRoot: homeRoot,
-      acquireGitRepository: async () => {
-        throw new Error('a migrated snapshot must not be acquired again');
-      },
     });
     await reloaded.initialize();
-    assert.equal(reloaded.list([]).sources[0]?.sourceRole, 'official');
-    const migrated = JSON.parse(await readFile(registryPath, 'utf8')) as {
-      schemaVersion: number;
-      sources: Array<{ sourceRole?: string }>;
+    const cachedEntry = reloaded
+      .list([])
+      .entries.find((entry) => entry.entryId === 'workflow-helper');
+    assert.equal(cachedEntry?.status, 'installable');
+    assert.equal(cachedEntry?.contentDigest, originalEntry.contentDigest);
+    await assert.rejects(
+      reloaded.resolveInstallCandidate({
+        marketplaceId: source.marketplaceId,
+        entryId: 'workflow-helper',
+        expectedContentDigest: originalEntry.contentDigest,
+      }),
+      (error: unknown) =>
+        error instanceof PluginMarketplaceStoreError &&
+        error.code === 'conflict',
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+void test('marketplace reload rebuilds a corrupt derived catalog cache from its managed revision', async () => {
+  const fixture = await createMarketplaceFixture();
+  const homeRoot = join(fixture.root, 'home');
+  const marketplaces = createPluginMarketplaceStore({
+    homeStateRoot: homeRoot,
+    acquireGitRepository: async ({ repositoryRoot }) => {
+      await cp(fixture.repositoryRoot, repositoryRoot, { recursive: true });
+    },
+  });
+  try {
+    await marketplaces.initialize();
+    const source = await marketplaces.add({
+      sourceKind: 'git',
+      url: 'https://github.com/example/plugins.git',
+    });
+    const cachePath = join(
+      homeRoot,
+      'extensions',
+      'marketplaces',
+      'sources',
+      source.marketplaceId,
+      'catalog-cache.json',
+    );
+    await writeFile(cachePath, '{not-json');
+
+    const reloaded = createPluginMarketplaceStore({
+      homeStateRoot: homeRoot,
+    });
+    await reloaded.initialize();
+
+    assert.equal(reloaded.list([]).entries[0]?.status, 'installable');
+    const rebuiltCache = JSON.parse(await readFile(cachePath, 'utf8')) as {
+      schemaVersion?: unknown;
     };
-    assert.equal(migrated.schemaVersion, 2);
-    assert.equal(migrated.sources[0]?.sourceRole, 'official');
+    assert.equal(rebuiltCache.schemaVersion, 1);
   } finally {
     await fixture.cleanup();
   }
@@ -683,97 +634,6 @@ void test('marketplace detects duplicate sources, invalid icons, and post-inspec
   }
 });
 
-void test('marketplace reload isolates a corrupt snapshot and reconciles unmanaged directories', async () => {
-  const fixture = await createMarketplaceFixture();
-  const homeRoot = join(fixture.root, 'home');
-  const marketplacesRoot = join(homeRoot, 'extensions', 'marketplaces');
-  const marketplaces = createPluginMarketplaceStore({
-    homeStateRoot: homeRoot,
-    acquireGitRepository: async ({ repositoryRoot }) => {
-      await cp(fixture.repositoryRoot, repositoryRoot, { recursive: true });
-    },
-  });
-  try {
-    await marketplaces.initialize();
-    const source = await marketplaces.add({
-      sourceKind: 'git',
-      url: 'https://github.com/example/plugins.git',
-    });
-    const registryPath = join(marketplacesRoot, 'registry.json');
-    const persisted = JSON.parse(await readFile(registryPath, 'utf8')) as {
-      sources: Array<{ resolvedRevision: string }>;
-    };
-    assert.ok(persisted.sources[0]);
-    persisted.sources[0].resolvedRevision = `git:${'0'.repeat(40)}`;
-    await writeFile(registryPath, `${JSON.stringify(persisted, null, 2)}\n`);
-    await mkdir(join(marketplacesRoot, '.staging', 'leftover'), {
-      recursive: true,
-    });
-    await mkdir(
-      join(marketplacesRoot, 'sources', '22222222-2222-4222-8222-222222222222'),
-      { recursive: true },
-    );
-
-    const reloaded = createPluginMarketplaceStore({ homeStateRoot: homeRoot });
-    await reloaded.initialize();
-    const listed = reloaded.list([]);
-    assert.equal(listed.sources[0]?.marketplaceId, source.marketplaceId);
-    assert.deepEqual(listed.entries, []);
-    assert.equal(listed.diagnostics[0]?.code, 'invalid-marketplace');
-    assert.deepEqual(await readdir(join(marketplacesRoot, '.staging')), []);
-    assert.deepEqual(await readdir(join(marketplacesRoot, 'sources')), [
-      source.marketplaceId,
-    ]);
-  } finally {
-    await fixture.cleanup();
-  }
-});
-
-void test('marketplace registry rejects invalid JSON, shape, encoding, and file type', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'geulbat-marketplace-registry-'));
-  const homeRoot = join(root, 'home');
-  const registryRoot = join(homeRoot, 'extensions', 'marketplaces');
-  const registryPath = join(registryRoot, 'registry.json');
-  await mkdir(registryRoot, { recursive: true });
-  try {
-    for (const document of [
-      '{not-json',
-      JSON.stringify({ schemaVersion: 2, sources: [], extra: true }),
-      JSON.stringify({ schemaVersion: 99, sources: [] }),
-      JSON.stringify({ schemaVersion: 2, sources: 'not-an-array' }),
-    ]) {
-      await writeFile(registryPath, document);
-      const marketplaces = createPluginMarketplaceStore({
-        homeStateRoot: homeRoot,
-      });
-      await assert.rejects(
-        marketplaces.initialize(),
-        (error: unknown) =>
-          error instanceof PluginMarketplaceStoreError &&
-          error.code === 'corrupt_registry',
-      );
-    }
-
-    await writeFile(registryPath, Buffer.from([0xff]));
-    await assert.rejects(
-      createPluginMarketplaceStore({ homeStateRoot: homeRoot }).initialize(),
-      (error: unknown) =>
-        error instanceof PluginMarketplaceStoreError &&
-        error.code === 'corrupt_registry',
-    );
-    await rm(registryPath);
-    await mkdir(registryPath);
-    await assert.rejects(
-      createPluginMarketplaceStore({ homeStateRoot: homeRoot }).initialize(),
-      (error: unknown) =>
-        error instanceof PluginMarketplaceStoreError &&
-        error.code === 'corrupt_registry',
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 void test('marketplace acquisition rejects missing and malformed catalogs before publication', async () => {
   const fixture = await createMarketplaceFixture();
   const marketplaces = createPluginMarketplaceStore({
@@ -833,97 +693,3 @@ void test('marketplace acquisition rejects missing and malformed catalogs before
     await fixture.cleanup();
   }
 });
-
-async function createMarketplaceFixture(options?: {
-  includeUnsupportedNpm?: boolean;
-  invalidManifest?: boolean;
-  omitIcon?: boolean;
-  marketplaceName?: string;
-  marketplaceDisplayName?: string;
-}) {
-  const root = await mkdtemp(join(tmpdir(), 'geulbat-marketplace-'));
-  const repositoryRoot = join(root, 'source');
-  const pluginRoot = join(repositoryRoot, 'plugins', 'workflow-helper');
-  await mkdir(join(repositoryRoot, '.agents', 'plugins'), { recursive: true });
-  await mkdir(join(pluginRoot, '.codex-plugin'), { recursive: true });
-  await mkdir(join(pluginRoot, 'assets'), { recursive: true });
-  await mkdir(join(pluginRoot, 'skills', 'workflow'), { recursive: true });
-  const entries: unknown[] = [
-    {
-      name: 'workflow-helper',
-      source: { source: 'local', path: './plugins/workflow-helper' },
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      category: 'Productivity',
-    },
-  ];
-  if (options?.includeUnsupportedNpm) {
-    entries.push({
-      name: 'npm-helper',
-      source: {
-        source: 'npm',
-        package: '@example/npm-helper',
-        version: '^1.0.0',
-      },
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      category: 'Developer Tools',
-    });
-  }
-  await writeFile(
-    join(repositoryRoot, '.agents', 'plugins', 'marketplace.json'),
-    `${JSON.stringify(
-      {
-        name: options?.marketplaceName ?? 'fixture-marketplace',
-        interface: {
-          displayName: options?.marketplaceDisplayName ?? 'Fixture marketplace',
-        },
-        plugins: entries,
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  await writeFile(
-    join(pluginRoot, '.codex-plugin', 'plugin.json'),
-    `${JSON.stringify(
-      options?.invalidManifest
-        ? { name: 'different-name', version: '1.0.0', description: 'Invalid.' }
-        : {
-            name: 'workflow-helper',
-            version: '1.0.0',
-            description: 'A fixture workflow.',
-            interface: {
-              displayName: 'Workflow helper',
-              ...(options?.omitIcon ? {} : { logo: './assets/logo.png' }),
-            },
-            skills: './skills',
-          },
-      null,
-      2,
-    )}\n`,
-  );
-  if (!options?.omitIcon) {
-    await writeFile(join(pluginRoot, 'assets', 'logo.png'), 'fixture-icon');
-  }
-  await writeFile(
-    join(pluginRoot, 'skills', 'workflow', 'SKILL.md'),
-    '---\nname: authored-workflow\ndescription: Use the fixture workflow.\nmetadata:\n  priority: 2\n  tags: [fixture, workflow]\nallowed-tools:\n  - Read\n---\n\n# Workflow\n',
-  );
-  runGit(repositoryRoot, ['init', '--quiet']);
-  runGit(repositoryRoot, ['config', 'user.email', 'fixture@example.com']);
-  runGit(repositoryRoot, ['config', 'user.name', 'Fixture']);
-  runGit(repositoryRoot, ['add', '.']);
-  runGit(repositoryRoot, ['commit', '--quiet', '-m', 'fixture marketplace']);
-  return {
-    root,
-    repositoryRoot,
-    cleanup: () => rm(root, { recursive: true, force: true }),
-  };
-}
-
-function runGit(cwd: string, args: string[]): string {
-  const result = spawnSync('git', ['-C', cwd, ...args], {
-    encoding: 'utf8',
-  });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout.trim();
-}

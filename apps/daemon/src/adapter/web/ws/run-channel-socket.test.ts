@@ -200,6 +200,7 @@ void test('ensureThreadBackgroundSubscription subscribes once and forwards backg
     const message = readLastSentMessage(socket);
     assert.equal(message?.type, 'run.event');
     if (message?.type === 'run.event') {
+      assert.equal(message.runEventCursor, false);
       assert.equal(message.event.type, 'subagent_terminal');
       assert.equal(message.event.threadId, threadId);
       assert.equal(message.event.seq, 0);
@@ -409,6 +410,7 @@ void test('bindSocketRuns restores active background children even after their p
     const message = readLastSentMessage(socket);
     assert.equal(message?.type, 'run.event');
     if (message?.type === 'run.event') {
+      assert.equal(message.runEventCursor, false);
       assert.equal(message.event.type, 'subagent_spawned');
       assert.equal(message.event.runId, parentRunId);
       assert.equal(message.event.threadId, ownerThreadId);
@@ -442,6 +444,7 @@ void test('bindSocketRuns restores active background children even after their p
     const statusMessage = readLastSentMessage(socket);
     assert.equal(statusMessage?.type, 'run.event');
     if (statusMessage?.type === 'run.event') {
+      assert.equal(statusMessage.runEventCursor, false);
       assert.equal(statusMessage.event.type, 'subagent_status');
       if (statusMessage.event.type === 'subagent_status') {
         assert.deepEqual(statusMessage.event.payload.runtime, {
@@ -455,6 +458,57 @@ void test('bindSocketRuns restores active background children even after their p
           partialOutputAvailable: false,
         });
         assert.equal(statusMessage.event.payload.modelId, 'gpt-5.6-sol');
+      }
+    }
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('a bound socket receives the registry terminal transition when result delivery is unavailable', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const ownerThreadId = testThreadId(231);
+  const childThreadId = testThreadId(232);
+  const parentRunId = testRunId('parent-terminal-registry-fallback');
+  const childRunId = testRunId('child-terminal-registry-fallback');
+
+  daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    parentRunId,
+    ownerThreadId,
+    childRunId,
+    childThreadId,
+    subagentType: 'worker',
+  });
+
+  try {
+    assert.equal(await bindSocketRuns(socket, daemonContext), 0);
+    daemonContext.childRuns.markChildTerminal({
+      childRunId,
+      terminalState: 'failed',
+      result: 'child stopped before result delivery recovered',
+      reason: 'child_error',
+    });
+
+    const message = readLastSentMessage(socket);
+    assert.equal(message?.type, 'run.event');
+    if (message?.type === 'run.event') {
+      assert.equal(message.runEventCursor, false);
+      assert.equal(message.event.type, 'subagent_terminal');
+      if (message.event.type === 'subagent_terminal') {
+        assert.equal(message.event.runId, childRunId);
+        assert.equal(message.event.threadId, ownerThreadId);
+        assert.equal(message.event.payload.parentRunId, parentRunId);
+        assert.equal(message.event.payload.childRunId, childRunId);
+        assert.equal(message.event.payload.childThreadId, childThreadId);
+        assert.equal(message.event.payload.terminalState, 'failed');
+        assert.equal(message.event.payload.reason, 'child_error');
+        assert.equal(
+          message.event.payload.result,
+          'child stopped before result delivery recovered',
+        );
+        assert.notEqual(message.event.payload.deliveryId, '');
       }
     }
   } finally {

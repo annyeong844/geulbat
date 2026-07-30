@@ -86,6 +86,13 @@ export interface FrameToolClient {
   tool(request: RunToolRequest): Promise<RunToolResultPayload>;
 }
 
+export interface ProviderRequestRecoveryClient {
+  recoverProviderRequestOutcomeUnknown(request: {
+    threadId: ReturnType<typeof brandThreadId>;
+    acknowledgePossibleDuplicateProviderWork: true;
+  }): Promise<'terminal_available' | 'owner_active' | 'abandoned'>;
+}
+
 export type RunToolFailure = Extract<RunToolResultPayload, { ok: false }>;
 
 export interface CancelActionState {
@@ -354,12 +361,20 @@ export async function regeneratePromptAction({
   trimMessagesForRegenerate,
   appendOptimisticUserMessage,
   logCommandFailure,
+  providerRequestRecoveryClient,
   prepareStartRequest = prepareRunStartRequest,
 }: Omit<RunPromptActionArgs, 'attachments'> & {
   trimMessagesForRegenerate: () => void;
+  providerRequestRecoveryClient?: ProviderRequestRecoveryClient;
 }): Promise<boolean> {
   if (promptInputs.selectedThreadId === null) {
     return false;
+  }
+  if (providerRequestRecoveryClient !== undefined) {
+    await providerRequestRecoveryClient.recoverProviderRequestOutcomeUnknown({
+      threadId: brandThreadId(promptInputs.selectedThreadId),
+      acknowledgePossibleDuplicateProviderWork: true,
+    });
   }
   // 옛 질문+답변을 걷어내고, 파이프라인의 낙관적 append가 (수정된) 질문을
   // 즉시 그 자리에 다시 그린다 — 수정 제출 순간 화면이 바뀐다.

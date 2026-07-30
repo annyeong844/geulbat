@@ -32,18 +32,25 @@ export function makeDetachedHandle(args: {
   };
 }
 
+export function deferredTestValue<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolveValue: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolveValue = resolve;
+  });
+  return {
+    promise,
+    resolve: (value) => resolveValue(value),
+  };
+}
+
 export function deferredDetachedProcessExit(): {
   promise: Promise<DetachedProcessExitInfo>;
   resolve(exit: DetachedProcessExitInfo): void;
 } {
-  let resolveExit: (exit: DetachedProcessExitInfo) => void;
-  const promise = new Promise<DetachedProcessExitInfo>((resolve) => {
-    resolveExit = resolve;
-  });
-  return {
-    promise,
-    resolve: (exit) => resolveExit(exit),
-  };
+  return deferredTestValue<DetachedProcessExitInfo>();
 }
 
 export function makeExitGatedDetachedHandle(args: {

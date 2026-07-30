@@ -71,6 +71,7 @@ export function errorCodeToStatus(code: ErrorCode): number {
     case 'provider_transition_required':
     case 'conflict_stale_write':
     case 'conflict_active_run':
+    case 'llm_provider_request_outcome_unknown':
     case 'persistence_conflict':
     case 'provider_auth_already_connected':
     // 무진전은 서버 오류가 아니라 같은 상태가 반복돼 진행이 막힌 것이다.

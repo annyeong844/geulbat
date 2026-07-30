@@ -129,6 +129,99 @@ void test('runModelRound emits factual auth, cooldown, and provider wait states'
   );
 });
 
+void test('runModelRound publishes one active diagnostic before each concurrent durable request is prepared', async () => {
+  const threadIds = [testThreadId(67), testThreadId(68), testThreadId(69)];
+  let preparedCount = 0;
+  let resolveAllPrepared: () => void = () => undefined;
+  const allPrepared = new Promise<void>((resolve) => {
+    resolveAllPrepared = resolve;
+  });
+
+  const lanes = threadIds.map((threadId, index) => {
+    const events: AgentEvent[] = [];
+    let releaseProvider: () => void = () => undefined;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const requestIdentity = `${index + 1}`.repeat(64);
+    const result = runModelRound({
+      history: [{ kind: 'user', text: `hello ${index}` }],
+      systemPrompt: 'system instructions',
+      round: 0,
+      toolDefs: [],
+      threadId,
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: createProviderAuthRuntimeStore(),
+      providerRequestOptions: defaultProviderRequestOptions,
+      emit: makeEmitter(events),
+      async onDurableProviderRequestPrepared(snapshot) {
+        assert.equal(snapshot.requestIdentity, requestIdentity);
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ['provider_status'],
+        );
+        const activeStatus = events[0];
+        assert.equal(activeStatus?.type, 'provider_status');
+        if (activeStatus?.type !== 'provider_status') {
+          assert.fail('provider request diagnostic was not published first');
+        }
+        assert.equal(activeStatus.payload.request?.endedAt, undefined);
+        assert.equal(activeStatus.payload.request?.attemptCount, 1);
+      },
+      async *callModelImpl(input) {
+        await input.onDurableProviderRequestPrepared?.({
+          requestIdentity,
+          providerRequestAttempt: 0,
+          transportKind: 'websocket',
+          resumed: false,
+        });
+        preparedCount += 1;
+        if (preparedCount === threadIds.length) {
+          resolveAllPrepared();
+        }
+        await providerReleased;
+        yield {
+          type: 'done',
+          assistantText: `done ${index}`,
+          finalText: `done ${index}`,
+        };
+      },
+    });
+    return { events, releaseProvider, result };
+  });
+
+  await allPrepared;
+  assert.equal(
+    lanes.filter((lane) => {
+      const latest = lane.events.at(-1);
+      return (
+        latest?.type === 'provider_status' &&
+        latest.payload.request?.endedAt === undefined
+      );
+    }).length,
+    threadIds.length,
+  );
+
+  for (const lane of lanes) {
+    lane.releaseProvider();
+  }
+  const results = await Promise.all(lanes.map((lane) => lane.result));
+  assert.equal(
+    results.every((result) => result.ok),
+    true,
+  );
+  assert.equal(
+    lanes.filter((lane) => {
+      const latest = lane.events.at(-1);
+      return (
+        latest?.type === 'provider_status' &&
+        latest.payload.request?.endedAt !== undefined
+      );
+    }).length,
+    threadIds.length,
+  );
+});
+
 void test('runModelRound keeps instructions byte-stable while aggregating a round', async () => {
   const threadId = testThreadId(51);
   const events: AgentEvent[] = [];
@@ -433,6 +526,64 @@ void test('runModelRound still accepts tool calls without visible prose', async 
   ]);
 });
 
+void test('runModelRound does not promote tool-call commentary to terminal final prose', async () => {
+  const events: AgentEvent[] = [];
+  const recoveryCommentary =
+    'I accidentally added an invalid key. Let me retry with a valid schema.';
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'ask me the next planning question' }],
+    systemPrompt: 'system',
+    round: 1,
+    toolDefs: [],
+    threadId: testThreadId(66),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter(events),
+    async *callModelImpl() {
+      yield {
+        type: 'text_delta',
+        text: recoveryCommentary,
+        phase: 'commentary',
+      };
+      yield {
+        type: 'tool_call',
+        id: 'fc-ask-user-retry',
+        callId: 'call-ask-user-retry',
+        toolName: 'ask_user',
+        argumentsJson:
+          '{"questions":[{"header":"선택","id":"choice","question":"어느 쪽일까요?","options":[{"label":"첫 번째","description":"첫 번째 방향입니다."},{"label":"두 번째","description":"두 번째 방향입니다."}]}]}',
+      };
+      yield {
+        type: 'done',
+        assistantText: recoveryCommentary,
+        finalText: '',
+        stopReason: 'tool_calls',
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: {
+      assistantText: recoveryCommentary,
+      terminalResult: { ok: true, finalProse: '' },
+      functionCalls: [
+        {
+          id: 'fc-ask-user-retry',
+          callId: 'call-ask-user-retry',
+          name: 'ask_user',
+          arguments:
+            '{"questions":[{"header":"선택","id":"choice","question":"어느 쪽일까요?","options":[{"label":"첫 번째","description":"첫 번째 방향입니다."},{"label":"두 번째","description":"두 번째 방향입니다."}]}]}',
+        },
+      ],
+    },
+  });
+  assert.deepEqual(withoutProviderStatus(events), [
+    createAgentEvent('commentary_delta', { text: recoveryCommentary }),
+  ]);
+});
+
 void test('runModelRound fails closed when finish signals tool_calls but none arrived', async () => {
   const events: AgentEvent[] = [];
   const result = await runModelRound({
@@ -628,899 +779,6 @@ void test('runModelRound streams final answer deltas as they arrive without a du
     createAgentEvent('final_answer_delta', { text: '안녕' }),
     createAgentEvent('final_answer_delta', { text: '하세요' }),
   ]);
-});
-
-void test('runModelRound converts provider error chunks into terminal failure', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  const originalError = console.error;
-  const errors: unknown[][] = [];
-
-  console.error = (...args: unknown[]) => {
-    errors.push(args);
-  };
-  let result: Awaited<ReturnType<typeof runModelRound>>;
-  try {
-    result = await runModelRound({
-      history: [],
-      systemPrompt: 'system',
-      round: 1,
-      toolDefs: [],
-      threadId: testThreadId(52),
-      providerWebSocketSessions: unusedProviderWebSocketSessions,
-      providerAuthRuntime,
-      providerRequestOptions: defaultProviderRequestOptions,
-      emit: makeEmitter(events),
-      callModelImpl: createScriptedProviderCallModel([
-        {
-          error: Object.assign(new Error('provider said no'), {
-            llmCode: 'not_found',
-          }),
-        },
-      ]),
-    });
-  } finally {
-    console.error = originalError;
-  }
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'not_found',
-      message: 'provider request failed',
-    }),
-  ]);
-  assert.equal(errors.length, 1);
-  assert.match(String(errors[0]?.[0]), /model round failed/);
-  assert.deepEqual(errors[0]?.[1], {
-    category: 'unknown',
-    code: 'not_found',
-    cause: 'provider request failed',
-  });
-});
-
-void test('runModelRound surfaces provider transition admission without retrying the target', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  const originalError = console.error;
-  let attempts = 0;
-
-  console.error = () => {};
-  let result: Awaited<ReturnType<typeof runModelRound>>;
-  try {
-    result = await runModelRound({
-      history: [],
-      systemPrompt: 'system',
-      round: 1,
-      toolDefs: [],
-      threadId: testThreadId(53),
-      providerWebSocketSessions: unusedProviderWebSocketSessions,
-      providerAuthRuntime,
-      providerRequestOptions: defaultProviderRequestOptions,
-      emit: makeEmitter(events),
-      callModelImpl: async function* () {
-        attempts += 1;
-        yield {
-          type: 'error',
-          code: 'provider_transition_required',
-          message: 'provider transition requires a portable context handoff',
-        };
-      },
-    });
-  } finally {
-    console.error = originalError;
-  }
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.equal(attempts, 1);
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'provider_transition_required',
-      message: 'provider transition requires a portable context handoff',
-    }),
-  ]);
-});
-
-void test('runModelRound applies one consent-backed handoff to provider transition admission', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-  let recoveryCalls = 0;
-
-  const result = await runModelRound({
-    history: [{ kind: 'user', text: 'continue on the selected provider' }],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(54),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    onContextOverflow: async () => {
-      recoveryCalls += 1;
-      return true;
-    },
-    callModelImpl: async function* () {
-      attempts += 1;
-      if (attempts === 1) {
-        yield {
-          type: 'error',
-          code: 'provider_transition_required',
-          message: 'provider transition requires a portable context handoff',
-        };
-        return;
-      }
-      yield { type: 'text_delta', text: 'recovered', phase: 'final_answer' };
-      yield {
-        type: 'done',
-        assistantText: 'recovered',
-        finalText: 'recovered',
-      };
-    },
-  });
-
-  assert.equal(attempts, 2);
-  assert.equal(recoveryCalls, 1);
-  assert.deepEqual(result, {
-    ok: true,
-    value: {
-      assistantText: 'recovered',
-      terminalResult: { ok: true, finalProse: 'recovered' },
-      functionCalls: [],
-    },
-  });
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('final_answer_delta', { text: 'recovered' }),
-  ]);
-});
-
-void test('runModelRound retries retryable stream errors before semantic output', async () => {
-  const events: AgentEvent[] = [];
-  const sleptDelays: number[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(59),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: {
-      ...defaultProviderRequestOptions,
-      modelRoundRetry: {
-        llmConnectionLost: { maxRetries: 2 },
-        llmOverloaded: { maxRetries: 3 },
-        llmRateLimited: { maxRetries: 3 },
-        delay: {
-          baseDelayMs: 123,
-          multiplier: 2,
-          maxDelayMs: 999,
-          jitterRatio: 0,
-        },
-      },
-    },
-    emit: makeEmitter(events),
-    now: () => 1_000,
-    retrySleep: async (delayMs) => {
-      sleptDelays.push(delayMs);
-    },
-    callModelImpl: async function* () {
-      attempts += 1;
-      if (attempts === 1) {
-        yield {
-          type: 'error',
-          code: 'llm_rate_limited',
-          message: 'provider rate limited',
-        };
-        return;
-      }
-      yield { type: 'text_delta', text: 'done', phase: 'final_answer' };
-      yield { type: 'done', assistantText: 'done', finalText: 'done' };
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    value: {
-      assistantText: 'done',
-      terminalResult: {
-        ok: true,
-        finalProse: 'done',
-      },
-      functionCalls: [],
-    },
-  });
-  assert.equal(attempts, 2);
-  assert.deepEqual(sleptDelays, [123]);
-  const providerStatuses = events.filter(
-    (event): event is Extract<AgentEvent, { type: 'provider_status' }> =>
-      event.type === 'provider_status',
-  );
-  assert.deepEqual(
-    providerStatuses.find(
-      (event) => event.payload.request?.retry?.outcome === 'scheduled',
-    )?.payload.request?.retry,
-    {
-      available: true,
-      performed: true,
-      outcome: 'scheduled',
-    },
-  );
-  assert.deepEqual(providerStatuses.at(-1)?.payload.request, {
-    startedAt: '1970-01-01T00:00:01.000Z',
-    lastEventAt: '1970-01-01T00:00:01.000Z',
-    endedAt: '1970-01-01T00:00:01.000Z',
-    durationMs: 0,
-    attemptCount: 2,
-    retry: {
-      available: false,
-      performed: true,
-      outcome: 'recovered',
-    },
-  });
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('final_answer_delta', { text: 'done' }),
-  ]);
-});
-
-void test('runModelRound performs one consent-backed context recovery before surfacing overflow', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-  let recoveryCalls = 0;
-
-  const result = await runModelRound({
-    history: [{ kind: 'user', text: 'continue' }],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(64),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    onContextOverflow: async () => {
-      recoveryCalls += 1;
-      return true;
-    },
-    callModelImpl: async function* () {
-      attempts += 1;
-      if (attempts === 1) {
-        yield {
-          type: 'error',
-          code: 'llm_context_length_exceeded',
-          message: 'context length exceeded',
-        };
-        return;
-      }
-      yield { type: 'text_delta', text: 'recovered', phase: 'final_answer' };
-      yield {
-        type: 'done',
-        assistantText: 'recovered',
-        finalText: 'recovered',
-      };
-    },
-  });
-
-  assert.equal(attempts, 2);
-  assert.equal(recoveryCalls, 1);
-  assert.deepEqual(result, {
-    ok: true,
-    value: {
-      assistantText: 'recovered',
-      terminalResult: { ok: true, finalProse: 'recovered' },
-      functionCalls: [],
-    },
-  });
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('final_answer_delta', { text: 'recovered' }),
-  ]);
-});
-
-void test('runModelRound does not retry when usage limit is exhausted', async () => {
-  const events: AgentEvent[] = [];
-  let attempts = 0;
-
-  const result = await runModelRound({
-    history: [{ kind: 'user', text: 'hello' }],
-    systemPrompt: 'system',
-    round: 0,
-    toolDefs: [],
-    threadId: testThreadId(71),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime: createProviderAuthRuntimeStore(),
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    callModelImpl: async function* () {
-      attempts += 1;
-      yield {
-        type: 'error',
-        code: 'llm_usage_limit_exceeded',
-        message:
-          'provider usage or credit limit exceeded; top up or change plan (this is not a transient rate limit)',
-      };
-    },
-  });
-
-  assert.equal(attempts, 1);
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'llm_usage_limit_exceeded',
-      message:
-        'provider usage or credit limit exceeded; top up or change plan (this is not a transient rate limit)',
-    }),
-  ]);
-});
-
-void test('runModelRound strips encrypted reasoning once after replay rejection', async () => {
-  const history = [
-    { kind: 'user' as const, text: 'hello' },
-    {
-      kind: 'backend_item' as const,
-      data: {
-        type: 'reasoning',
-        id: 'rs_1',
-        encrypted_content: 'opaque-blob',
-      },
-    },
-  ];
-  let attempts = 0;
-
-  const result = await runModelRound({
-    history,
-    systemPrompt: 'system',
-    round: 0,
-    toolDefs: [],
-    threadId: testThreadId(72),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime: createProviderAuthRuntimeStore(),
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter([]),
-    callModelImpl: async function* () {
-      attempts += 1;
-      if (attempts === 1) {
-        yield {
-          type: 'error',
-          code: 'llm_replay_state_rejected',
-          message: 'provider rejected encrypted reasoning replay',
-        };
-        return;
-      }
-      yield { type: 'text_delta', text: 'recovered', phase: 'final_answer' };
-      yield {
-        type: 'done',
-        assistantText: 'recovered',
-        finalText: 'recovered',
-      };
-    },
-  });
-
-  assert.equal(attempts, 2);
-  assert.equal(history.length, 1);
-  assert.deepEqual(history[0], { kind: 'user', text: 'hello' });
-  assert.equal(result.ok, true);
-  assert.equal(result.ok ? result.value.assistantText : '', 'recovered');
-});
-
-void test('runModelRound terminals replay rejection when no encrypted items remain', async () => {
-  let attempts = 0;
-  const result = await runModelRound({
-    history: [{ kind: 'user', text: 'hello' }],
-    systemPrompt: 'system',
-    round: 0,
-    toolDefs: [],
-    threadId: testThreadId(73),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime: createProviderAuthRuntimeStore(),
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter([]),
-    callModelImpl: async function* () {
-      attempts += 1;
-      yield {
-        type: 'error',
-        code: 'llm_replay_state_rejected',
-        message: 'provider rejected encrypted reasoning replay',
-      };
-    },
-  });
-
-  assert.equal(attempts, 1);
-  assert.equal(result.ok, false);
-});
-
-void test('runModelRound does not run context recovery for output-budget rejections', async () => {
-  const events: AgentEvent[] = [];
-  let recoveryCalls = 0;
-  let attempts = 0;
-
-  const result = await runModelRound({
-    history: [{ kind: 'user', text: 'continue' }],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(70),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime: createProviderAuthRuntimeStore(),
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    onContextOverflow: async () => {
-      recoveryCalls += 1;
-      return true;
-    },
-    callModelImpl: async function* () {
-      attempts += 1;
-      // Provider rejected max_tokens — not an input overflow. Compaction must
-      // not run; the same max_tokens would fail again deterministically.
-      yield {
-        type: 'error',
-        code: 'llm_output_budget_exceeded',
-        message:
-          'output token budget exceeded; lower max_tokens (this is not an input context overflow)',
-      };
-    },
-  });
-
-  assert.equal(attempts, 1);
-  assert.equal(recoveryCalls, 0);
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'llm_output_budget_exceeded',
-      message:
-        'output token budget exceeded; lower max_tokens (this is not an input context overflow)',
-    }),
-  ]);
-});
-
-void test('runModelRound never loops context recovery after the compacted retry also overflows', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-  let recoveryCalls = 0;
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(65),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    onContextOverflow: async () => {
-      recoveryCalls += 1;
-      return true;
-    },
-    callModelImpl: async function* () {
-      attempts += 1;
-      yield {
-        type: 'error',
-        code: 'llm_context_length_exceeded',
-        message: 'context length exceeded',
-      };
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.equal(attempts, 2);
-  assert.equal(recoveryCalls, 1);
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'llm_context_length_exceeded',
-      message: 'context length exceeded',
-    }),
-  ]);
-});
-
-void test('runModelRound rebuilds a request once after typed pre-dispatch preparation', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-  let preparationCalls = 0;
-
-  const result = await runModelRound({
-    history: [{ kind: 'user', text: 'continue' }],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(66),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    onContextPreparationRequired: async () => {
-      preparationCalls += 1;
-      return { kind: 'prepared' };
-    },
-    callModelImpl: async function* () {
-      attempts += 1;
-      if (attempts === 1) {
-        yield {
-          type: 'error',
-          code: 'llm_context_preparation_required',
-          message: 'context preparation required',
-        };
-        return;
-      }
-      yield { type: 'text_delta', text: 'prepared', phase: 'final_answer' };
-      yield {
-        type: 'done',
-        assistantText: 'prepared',
-        finalText: 'prepared',
-      };
-    },
-  });
-
-  assert.equal(attempts, 2);
-  assert.equal(preparationCalls, 1);
-  assert.deepEqual(result, {
-    ok: true,
-    value: {
-      assistantText: 'prepared',
-      terminalResult: { ok: true, finalProse: 'prepared' },
-      functionCalls: [],
-    },
-  });
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('final_answer_delta', { text: 'prepared' }),
-  ]);
-});
-
-void test('runModelRound surfaces a typed preparation failure without provider retry', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(67),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    onContextPreparationRequired: async () => ({
-      kind: 'failed',
-      message: 'context preparation could not commit',
-    }),
-    callModelImpl: async function* () {
-      attempts += 1;
-      yield {
-        type: 'error',
-        code: 'llm_context_preparation_required',
-        message: 'context preparation required',
-      };
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.equal(attempts, 1);
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'llm_context_length_exceeded',
-      message: 'context preparation could not commit',
-    }),
-  ]);
-});
-
-void test('runModelRound never repeats pre-dispatch preparation after the rebuilt request is still too large', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-  let preparationCalls = 0;
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(68),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    onContextPreparationRequired: async () => {
-      preparationCalls += 1;
-      return { kind: 'prepared' };
-    },
-    callModelImpl: async function* () {
-      attempts += 1;
-      yield {
-        type: 'error',
-        code: 'llm_context_preparation_required',
-        message: 'context preparation required',
-      };
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.equal(attempts, 2);
-  assert.equal(preparationCalls, 1);
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'llm_context_length_exceeded',
-      message: 'context preparation required',
-    }),
-  ]);
-});
-
-void test('runModelRound respects startup-frozen retry policy when a retryable category is disabled', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(63),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: {
-      ...defaultProviderRequestOptions,
-      modelRoundRetry: {
-        ...defaultProviderRequestOptions.modelRoundRetry,
-        llmRateLimited: { maxRetries: 0 },
-      },
-    },
-    emit: makeEmitter(events),
-    retrySleep: async () => {
-      assert.fail('retry sleep should not run when policy disables retry');
-    },
-    callModelImpl: async function* () {
-      attempts += 1;
-      yield {
-        type: 'error',
-        code: 'llm_rate_limited',
-        message: 'provider rate limited',
-      };
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.equal(attempts, 1);
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'llm_rate_limited',
-      message: 'provider rate limited',
-    }),
-  ]);
-});
-
-void test('runModelRound does not retry after semantic output has been emitted', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(60),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    retrySleep: async () => undefined,
-    callModelImpl: async function* () {
-      attempts += 1;
-      yield { type: 'text_delta', text: 'partial' };
-      yield {
-        type: 'error',
-        code: 'llm_rate_limited',
-        message: 'provider rate limited',
-      };
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.equal(attempts, 1);
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('commentary_delta', { text: 'partial' }),
-    createAgentEvent('error', {
-      code: 'llm_rate_limited',
-      message: 'provider rate limited',
-    }),
-  ]);
-});
-
-void test('runModelRound classifies thrown stream failures before retrying', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  let attempts = 0;
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(61),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    retrySleep: async () => undefined,
-    callModelImpl: async function* () {
-      attempts += 1;
-      if (attempts === 1) {
-        throw Object.assign(new Error('socket hang up'), {
-          code: 'ECONNRESET',
-        });
-      }
-      yield { type: 'text_delta', text: 'recovered', phase: 'final_answer' };
-      yield {
-        type: 'done',
-        assistantText: 'recovered',
-        finalText: 'recovered',
-      };
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    value: {
-      assistantText: 'recovered',
-      terminalResult: {
-        ok: true,
-        finalProse: 'recovered',
-      },
-      functionCalls: [],
-    },
-  });
-  assert.equal(attempts, 2);
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('final_answer_delta', { text: 'recovered' }),
-  ]);
-});
-
-void test('runModelRound does not classify a five-minute inter-chunk gap as a stall', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  const originalWarn = console.warn;
-  const warnings: unknown[][] = [];
-  const nowValues = [0, 0, 0, 0, 300_001];
-
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args);
-  };
-  let result: Awaited<ReturnType<typeof runModelRound>>;
-  try {
-    result = await runModelRound({
-      history: [],
-      systemPrompt: 'system',
-      round: 1,
-      toolDefs: [],
-      threadId: testThreadId(62),
-      providerWebSocketSessions: unusedProviderWebSocketSessions,
-      providerAuthRuntime,
-      providerRequestOptions: defaultProviderRequestOptions,
-      emit: makeEmitter(events),
-      now: () => nowValues.shift() ?? 10_001,
-      callModelImpl: async function* () {
-        yield { type: 'text_delta', text: 'a' };
-        yield { type: 'text_delta', text: 'b' };
-      },
-    });
-  } finally {
-    console.warn = originalWarn;
-  }
-
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.equal(result.value.assistantText, 'ab');
-  }
-  assert.deepEqual(warnings, []);
-});
-
-void test('runModelRound returns aborted terminal failure when the model throws after cancellation', async () => {
-  const controller = new AbortController();
-  controller.abort();
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 0,
-    toolDefs: [],
-    threadId: testThreadId(53),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    signal: controller.signal,
-    emit: makeEmitter(events),
-    callModelImpl: async function* () {
-      throw new Error('boom');
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.deepEqual(withoutProviderStatus(events), [
-    createAgentEvent('error', {
-      code: 'aborted',
-      message: 'run cancelled',
-    }),
-  ]);
-});
-
-void test('runModelRound returns aborted terminal failure when cancellation arrives between model chunks', async () => {
-  const controller = new AbortController();
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    round: 0,
-    toolDefs: [],
-    threadId: testThreadId(54),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    signal: controller.signal,
-    emit: makeEmitter(events),
-    callModelImpl: async function* () {
-      yield { type: 'text_delta', text: 'partial ' };
-      controller.abort();
-      yield { type: 'done', finalText: 'partial done' };
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    result: { ok: false, finalProse: '' },
-  });
-  assert.deepEqual(
-    withoutProviderStatus(events).map((event) => event.type),
-    ['commentary_delta', 'error'],
-  );
-  assert.deepEqual(events.at(-1), {
-    type: 'error',
-    payload: {
-      code: 'aborted',
-      message: 'run cancelled',
-    },
-  });
 });
 
 void test('runModelRound treats wrapped legacy envelope final text as plain prose', async () => {

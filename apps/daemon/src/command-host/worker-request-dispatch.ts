@@ -42,28 +42,28 @@ type DispatchOutcome =
 interface CommandHostRequestDispatchDeps {
   options: CommandHostServerOptions;
   /** §7.5 유계 알림 전송 — 폐기 시 resyncRequired는 서버가 처리한다. */
-  sendNotification(
+  sendNotification: (
     connection: ServerConnection,
     subscriptionId: string,
     outputRef: string,
     message: unknown,
-  ): void;
+  ) => void;
   /** §7.5 initialize 연결 정원 — 서버가 세고 판정한다. */
-  canAdmitInitializedConnection(): boolean;
+  canAdmitInitializedConnection: () => boolean;
   /**
    * initialize를 마친 연결을 받았다고 서버에 기록한다. 종료 게이트는 이
    * 사실로 "아직 안 왔다"와 "영영 안 온다"를 구별한다 (P7.6 §7.1).
    */
-  markServedConnection(): void;
+  markServedConnection: () => void;
 }
 
 interface CommandHostRequestDispatch {
-  dispatch(
+  dispatch: (
     connection: ServerConnection,
     method: string,
     params: unknown,
     context: { signal: AbortSignal },
-  ): Promise<DispatchOutcome>;
+  ) => Promise<DispatchOutcome>;
 }
 
 export function createCommandHostRequestDispatch(
@@ -144,7 +144,11 @@ export function createCommandHostRequestDispatch(
             : { requiresIdempotentStart: p.requiresIdempotentStart }),
           stdinMode: p.stdinMode,
           ...(p.initialStdin === undefined
-            ? {}
+            ? p.initialStdinBase64 === undefined
+              ? {}
+              : {
+                  initialStdin: Buffer.from(p.initialStdinBase64, 'base64'),
+                }
             : { initialStdin: p.initialStdin }),
           ...(p.owner === undefined ? {} : { owner: p.owner }),
           ...(p.streamMode === undefined ? {} : { streamMode: p.streamMode }),
@@ -177,6 +181,9 @@ export function createCommandHostRequestDispatch(
           ...(parsed.data.yieldTimeMs === undefined
             ? {}
             : { yieldTimeMs: parsed.data.yieldTimeMs }),
+          ...(parsed.data.requiresOutputRef === undefined
+            ? {}
+            : { requiresOutputRef: parsed.data.requiresOutputRef }),
           signal: context.signal,
         });
         connection.ownedUnclaimedRefs.delete(parsed.data.outputRef);
@@ -237,6 +244,9 @@ export function createCommandHostRequestDispatch(
                   stream: p.page.stream,
                   offsetBytes: p.page.offsetBytes,
                   limitBytes: p.page.limitBytes,
+                  ...(p.page.encoding === undefined
+                    ? {}
+                    : { encoding: p.page.encoding }),
                   ...(p.page.deferRelease === undefined
                     ? {}
                     : { deferRelease: p.page.deferRelease }),

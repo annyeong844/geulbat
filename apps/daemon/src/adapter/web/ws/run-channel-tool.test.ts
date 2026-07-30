@@ -103,7 +103,7 @@ void describe('handleRunTool', () => {
     });
   });
 
-  void test('uses the Computer root when an idle frame omits workingDirectory', async () => {
+  void test('does not invent a Computer-root cwd for an idle frame', async () => {
     assert.ok(daemonContext.computerFileScope);
     const computerFileScope = { ...daemonContext.computerFileScope };
     delete computerFileScope.browseStartPath;
@@ -121,10 +121,11 @@ void describe('handleRunTool', () => {
       { ...daemonContext, computerFileScope },
     );
 
-    assert.equal(
-      readRunToolControlResult(socket, 'tool-default-root').ok,
-      true,
-    );
+    assert.deepEqual(readRunToolControlResult(socket, 'tool-default-root'), {
+      ok: false,
+      errorCode: 'access_denied',
+      error: 'a working directory is required for relative file paths',
+    });
   });
 
   void test('maps unusable idle frame working directories before tool dispatch', async () => {

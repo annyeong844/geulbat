@@ -11,7 +11,11 @@ import type { RunAttachmentInput } from '@geulbat/protocol/run-contract';
 
 import { Assistant, type AssistantComposerControls } from './Assistant.js';
 import { AssistantComposer } from './AssistantComposer.js';
-import { PlanningWorkflowCard } from './run-plan/planning-workflow-card.js';
+import {
+  PlanningWorkflowCard,
+  resolvePlanningInterviewDecisions,
+} from './run-plan/planning-workflow-card.js';
+import { VisualizeWidget } from './visualize/visualize-widget.js';
 import { makeApprovalRequiredFixture } from '../../test-support/protocol-fixtures.js';
 import { createAssistantProps } from '../../test-support/create-assistant-props.js';
 import {
@@ -208,7 +212,17 @@ void test('visual approval waits for a diagram and auto-requests explain_visual'
   const approve = findButtonByText(renderer, '이 계획 승인');
   assert.ok(approve);
   assert.equal(approve.props.disabled, true);
-  assert.match(renderedText(renderer.root), /그림 준비/u);
+  const preparing = renderer.root.findByProps({
+    'aria-label': '계획 관계도 준비 중',
+  });
+  assert.match(
+    preparing.props.className,
+    /planning-workflow-visual-preparing/u,
+  );
+  const preparingText = renderedText(preparing);
+  assert.match(preparingText, /확정한 선택0개/u);
+  assert.match(preparingText, /실행 단계1개/u);
+  assert.match(preparingText, /도달할 목표승인 카드로 자동 인계/u);
   await act(async () => renderer.unmount());
 });
 
@@ -269,7 +283,8 @@ void test('visual approval enables only after the matching diagram is present', 
         visualization={{
           mode: 'svg',
           title: '승인할 계획 그림',
-          code: '<svg role="img" aria-label="승인할 계획"></svg>',
+          code: '<svg role="img" aria-label="승인할 계획"><g data-plan-step-id="handoff"></g></svg>',
+          planStepIds: ['handoff'],
           planStamp: {
             workflowId: snapshot.workflowId,
             planId: snapshot.planId,
@@ -322,7 +337,8 @@ void test('the approval card restores its matching persisted visualization inlin
                   args: {
                     mode: 'svg',
                     title: '승인할 계획 그림',
-                    code: '<svg role="img" aria-label="승인할 계획"></svg>',
+                    code: '<svg role="img" aria-label="승인할 계획"><g data-plan-step-id="handoff"></g></svg>',
+                    planStepIds: ['handoff'],
                     planStamp: {
                       workflowId: snapshot.workflowId,
                       planId: snapshot.planId,
@@ -421,7 +437,8 @@ void test('a visual plan opens a large dialog from its compact card preview', as
         visualization={{
           mode: 'svg',
           title: '승인 흐름',
-          code: '<svg role="img" aria-label="승인 흐름"></svg>',
+          code: '<svg role="img" aria-label="승인 흐름"><g data-plan-step-id="handoff"></g></svg>',
+          planStepIds: ['handoff'],
           planStamp: {
             workflowId: snapshot.workflowId,
             planId: snapshot.planId,
@@ -448,6 +465,53 @@ void test('a visual plan opens a large dialog from its compact card preview', as
     renderer.root.findAll((node) => node.props.role === 'dialog').length,
     0,
   );
+  await act(async () => renderer.unmount());
+});
+
+void test('an executing visual plan keeps the canonical diagram and projects live step state', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174050');
+  const awaiting = awaitingPlanningSnapshot(threadId);
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <PlanningWorkflowCard
+        workflow={{
+          busy: true,
+          snapshot: {
+            ...awaiting,
+            state: 'executing',
+            executionRunId: assertRunId('run-plan-card-executing'),
+          },
+          async onCommand() {},
+        }}
+        visualization={{
+          mode: 'svg',
+          title: '실행 흐름',
+          code: '<svg><g data-plan-step-id="handoff"></g></svg>',
+          planStepIds: ['handoff'],
+          planStamp: {
+            workflowId: awaiting.workflowId,
+            planId: awaiting.planId,
+            revision: awaiting.revision,
+            digest: awaiting.digest,
+          },
+        }}
+        executionPlan={[
+          {
+            id: 'handoff',
+            step: '정확한 revision을 실행으로 넘긴다',
+            status: 'in_progress',
+          },
+        ]}
+      />,
+    );
+  });
+
+  assert.match(renderedText(renderer.root), /실행 중/u);
+  const visual = renderer.root.findByType(VisualizeWidget);
+  assert.deepEqual(visual.props.planStepStates, [
+    { id: 'handoff', status: 'in_progress' },
+  ]);
   await act(async () => renderer.unmount());
 });
 
@@ -520,6 +584,166 @@ void test('a collecting workflow occupies no card space while the planning run i
   await act(async () => renderer.unmount());
 });
 
+void test('planning interview decisions pair each ask_user card with its next user answer', () => {
+  const messages: ThreadMessage[] = [
+    {
+      entryId: 'before-workflow',
+      role: 'tool_call',
+      content: JSON.stringify({
+        tool: 'ask_user',
+        args: {
+          question: '이전 질문',
+          options: [
+            {
+              label: '이전 답',
+              description: '이 워크플로 전의 기록입니다.',
+            },
+          ],
+        },
+      }),
+      timestamp: '2026-07-25T23:59:59.000Z',
+    },
+    {
+      entryId: 'first-question',
+      role: 'tool_call',
+      content: JSON.stringify({
+        tool: 'ask_user',
+        args: {
+          question: '승인 카드는 어디에 둘까요?',
+          options: [
+            {
+              label: '현재 위치 유지',
+              description: '컴포저 위에 둡니다.',
+            },
+          ],
+        },
+      }),
+      timestamp: '2026-07-26T00:00:01.000Z',
+    },
+    {
+      entryId: 'first-answer',
+      role: 'user',
+      content: '현재 위치 유지',
+      timestamp: '2026-07-26T00:00:02.000Z',
+    },
+    {
+      entryId: 'second-question',
+      role: 'tool_call',
+      content: JSON.stringify({
+        tool: 'ask_user',
+        args: {
+          question: '그림은 어떻게 열까요?',
+          options: [
+            {
+              label: '크게 열기',
+              description: '대화 위에 큰 창으로 엽니다.',
+            },
+          ],
+        },
+      }),
+      timestamp: '2026-07-26T00:00:03.000Z',
+    },
+  ];
+
+  assert.deepEqual(
+    resolvePlanningInterviewDecisions(messages, '2026-07-26T00:00:00.000Z'),
+    [
+      {
+        purpose: 'decision',
+        question: '승인 카드는 어디에 둘까요?',
+        answer: '현재 위치 유지',
+      },
+    ],
+  );
+});
+
+void test('a busy deep interview keeps only its factual decision ledger visible', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174046');
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <PlanningWorkflowCard
+        workflow={{
+          busy: true,
+          snapshot: {
+            state: 'collecting',
+            workflowId: 'workflow-collecting-ledger',
+            threadId,
+            intensity: 'visual',
+            depth: 'deep',
+            createdAt: '2026-07-26T00:00:00.000Z',
+            updatedAt: '2026-07-26T00:00:01.000Z',
+          },
+          async onCommand() {},
+        }}
+        interviewDecisions={[
+          {
+            purpose: 'decision',
+            question: '승인 카드는 어디에 둘까요?',
+            answer: '현재 위치 유지',
+          },
+        ]}
+      />,
+    );
+  });
+
+  const text = renderedText(renderer.root);
+  assert.match(text, /심층 인터뷰/u);
+  assert.match(text, /확정한 선택 1개/u);
+  assert.match(text, /현재 위치 유지/u);
+  assert.doesNotMatch(text, /계획 취소/u);
+  assert.match(
+    renderer.root.findByType('section').props.className,
+    /has-decisions is-busy/u,
+  );
+  await act(async () => renderer.unmount());
+});
+
+void test('deep interview makes the final understanding checkpoint visible in its ledger', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174048');
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <PlanningWorkflowCard
+        workflow={{
+          busy: true,
+          snapshot: {
+            state: 'collecting',
+            workflowId: 'workflow-understanding-checkpoint',
+            threadId,
+            intensity: 'quiet',
+            depth: 'deep',
+            createdAt: '2026-07-26T00:00:00.000Z',
+            updatedAt: '2026-07-26T00:00:01.000Z',
+          },
+          async onCommand() {},
+        }}
+        interviewDecisions={[
+          {
+            purpose: 'decision',
+            question: '저장 방식은 무엇으로 할까요?',
+            answer: 'JSON',
+          },
+          {
+            purpose: 'understanding_confirmation',
+            question:
+              'JSON 파일을 만들고 승인 뒤 내용까지 검증하는 것이 목표예요. 맞나요?',
+            answer: '맞아요',
+          },
+        ]}
+      />,
+    );
+  });
+
+  const text = renderedText(renderer.root);
+  assert.match(text, /목표 이해 확인/u);
+  assert.match(text, /확인한 내용 2개/u);
+  assert.match(text, /제가 이해한 목표/u);
+  assert.match(text, /승인 뒤 내용까지 검증/u);
+  assert.match(text, /맞아요/u);
+  await act(async () => renderer.unmount());
+});
+
 void test('an idle collecting workflow leaves only a compact cancel control', async () => {
   const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174030');
   let renderer!: ReactTestRenderer;
@@ -551,6 +775,103 @@ void test('an idle collecting workflow leaves only a compact cancel control', as
     renderer.root.findByType('section').props.className,
     'planning-workflow-collecting-control',
   );
+  await act(async () => renderer.unmount());
+});
+
+void test('approval leads with the canonical user and agent decisions', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174047');
+  const snapshot = awaitingPlanningSnapshot(threadId);
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <PlanningWorkflowCard
+        workflow={{
+          busy: false,
+          snapshot: {
+            ...snapshot,
+            intensity: 'quiet',
+            draft: {
+              ...snapshot.draft,
+              decisions: [
+                {
+                  text: '승인 카드는 컴포저 위에 유지한다.',
+                  settledBy: 'user',
+                },
+                {
+                  text: '파일 경로는 작은 메타정보로 표시한다.',
+                  settledBy: 'agent',
+                },
+              ],
+            },
+          },
+          async onCommand() {},
+        }}
+      />,
+    );
+  });
+
+  const ledger = renderer.root.findByProps({
+    'aria-label': '승인에 포함된 선택',
+  });
+  const text = renderedText(ledger);
+  assert.match(text, /사용자 선택/u);
+  assert.match(text, /에이전트 판단/u);
+  assert.match(text, /승인 카드는 컴포저 위에 유지한다/u);
+  assert.match(text, /파일 경로는 작은 메타정보로 표시한다/u);
+  await act(async () => renderer.unmount());
+});
+
+void test('revised approval card shows the exact semantic changes from the previous canonical draft', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174049');
+  const snapshot = awaitingPlanningSnapshot(threadId);
+  const previousDraft = snapshot.draft;
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <PlanningWorkflowCard
+        workflow={{
+          busy: false,
+          snapshot: {
+            ...snapshot,
+            intensity: 'quiet',
+            supersededPlan: {
+              workflowId: snapshot.workflowId,
+              planId: snapshot.planId,
+              revision: 1,
+              digest:
+                'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+              draft: previousDraft,
+            },
+            draft: {
+              ...previousDraft,
+              outcome: '승인 카드로 자동 인계하고 변경점을 비교',
+              steps: [
+                ...previousDraft.steps,
+                {
+                  id: 'compare',
+                  text: '이전 revision과 변경점을 비교한다',
+                  acceptanceCriteria: ['추가·제외·수정이 구분된다'],
+                },
+              ],
+              decisions: [
+                {
+                  text: '변경 요약은 승인 카드 안에 둔다.',
+                  settledBy: 'user',
+                },
+              ],
+            },
+          },
+          async onCommand() {},
+        }}
+      />,
+    );
+  });
+
+  const text = renderedText(renderer.root);
+  assert.match(text, /이전 계획에서 달라진 점 · r1 → r2/u);
+  assert.match(text, /목표:/u);
+  assert.match(text, /단계 추가: 이전 revision과 변경점을 비교한다/u);
+  assert.match(text, /선택 추가: 변경 요약은 승인 카드 안에 둔다/u);
   await act(async () => renderer.unmount());
 });
 
@@ -1097,6 +1418,56 @@ void test('assistant offers retry when the run failed with a stream error', () =
     />,
   );
   assert.match(html, /답변 다시 시도/);
+});
+
+void test('outcome-unknown failures explain duplicate risk before the explicit recovery retry', async () => {
+  const retried: string[] = [];
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <Assistant
+        {...createAssistantProps({
+          conversation: {
+            messages: [
+              {
+                entryId: 'entry-user-outcome-unknown',
+                role: 'user' as const,
+                content: '큐웬에게 계속 작성해 달라고 해줘',
+                timestamp: '2026-07-29T00:00:00.000Z',
+              },
+            ],
+          },
+          runState: {
+            streamError:
+              '[llm_provider_request_outcome_unknown] provider request outcome is unknown',
+            streamErrorCode: 'llm_provider_request_outcome_unknown',
+          },
+          runActions: {
+            onRegenerate: async (prompt) => {
+              retried.push(prompt);
+            },
+          },
+        })}
+      />,
+    );
+  });
+
+  assert.match(renderedText(renderer.root), /자동으로 다시 보내지 않았어요/u);
+  assert.match(
+    renderedText(renderer.root),
+    /작업이나 요금이 중복될 수 있어요/u,
+  );
+  const recover = findButtonByText(
+    renderer,
+    '위험을 이해하고 이전 요청을 정리한 뒤 다시 시도',
+  );
+  assert.ok(recover);
+  await act(async () => {
+    recover.props.onClick();
+    await Promise.resolve();
+  });
+  assert.deepEqual(retried, ['큐웬에게 계속 작성해 달라고 해줘']);
+  await act(async () => renderer.unmount());
 });
 
 void test('failed approved execution offers only the exact-plan retry', () => {

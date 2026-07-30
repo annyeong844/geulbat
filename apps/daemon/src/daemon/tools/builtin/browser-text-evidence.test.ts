@@ -55,10 +55,15 @@ void test('browser_text_evidence replacement replay returns fresh explicit-URL e
   const daemonContext = createDaemonContext();
   let observedUrl = '';
   let observedTimeoutMs: number | undefined;
+  let observedHasWorkingDirectory = true;
   const ptcBrowserTextEvidence: PtcBrowserTextEvidenceRuntime = {
     async collectEvidence(args) {
       observedUrl = args.request.url;
       observedTimeoutMs = args.request.timeoutMs;
+      observedHasWorkingDirectory = Object.hasOwn(
+        args.runContext,
+        'workingDirectory',
+      );
       return {
         ok: true,
         value: browserTextEvidenceSummary(),
@@ -77,8 +82,6 @@ void test('browser_text_evidence replacement replay returns fresh explicit-URL e
     {
       callId: 'call-browser-text-evidence-success',
       stateRoot: '/workspace/home-state',
-
-      workingDirectory: 'project',
       threadId: testThreadId(956),
       runtimeServices: {
         ...daemonContext,
@@ -97,6 +100,7 @@ void test('browser_text_evidence replacement replay returns fresh explicit-URL e
     'https://example.com/private?access_token=secret#id_token=secret',
   );
   assert.equal(observedTimeoutMs, 1000);
+  assert.equal(observedHasWorkingDirectory, false);
   assert.doesNotMatch(result.output, /example\.com|access_token|id_token/u);
   const output = JSON.parse(result.output) as Record<string, unknown>;
   assert.equal(output.kind, 'ptc_lab_browser_text_evidence_result');

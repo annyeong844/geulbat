@@ -39,29 +39,29 @@ interface SessionInteractionDeps {
   /** §4.6 인라인 결과 예산 — 페이지 요청의 상한이다. */
   inlineMaxBytes: number;
   /** 미지정 yieldTimeMs를 호스트 상한으로 접는다 (§4.6). */
-  resolveYieldTimeMs(requested: number | undefined): number;
+  resolveYieldTimeMs: (requested: number | undefined) => number;
   /** 스냅샷에 인라인 출력을 실을 수 있는지 — 호스트의 예산 판정이다. */
-  inlineEligible(entry: SessionEntry): boolean;
+  inlineEligible: (entry: SessionEntry) => boolean;
   /** 페이지를 건넨 뒤 보관을 놓고 소스를 다시 흐르게 한다 (P7.6 §5.2). */
-  applyStreamBackpressure(
+  applyStreamBackpressure: (
     entry: SessionEntry,
     stream: HostCommandOutputStream,
-  ): void;
+  ) => void;
   /** 명시적 terminate 요청의 종료 경로 (§4.5). */
-  requestGracefulTermination(
+  requestGracefulTermination: (
     entry: SessionEntry,
     terminal: SessionTerminalState,
-  ): void;
+  ) => void;
 }
 
 interface SessionInteraction {
-  interactWithResident(
+  interactWithResident: (
     entry: SessionEntry,
     args: Parameters<HostCommandRuntime['interact']>[0],
-  ): Promise<HostCommandInteractionResult>;
-  interactWithPersisted(
+  ) => Promise<HostCommandInteractionResult>;
+  interactWithPersisted: (
     args: Parameters<HostCommandRuntime['interact']>[0],
-  ): Promise<HostCommandInteractionResult>;
+  ) => Promise<HostCommandInteractionResult>;
 }
 
 export function createSessionInteraction(
@@ -261,6 +261,9 @@ export function createSessionInteraction(
           archivedBytes: side.ring.omittedBytes,
           totalBytes: side.ring.totalBytes,
           inlineMaxBytes,
+          ...(args.page.encoding === undefined
+            ? {}
+            : { encoding: args.page.encoding }),
         });
         if (!archivedPage.ok && archivedPage.reasonCode !== 'not_found') {
           return archivedPage;
@@ -276,6 +279,9 @@ export function createSessionInteraction(
               stream: args.page.stream,
               offsetBytes: args.page.offsetBytes,
               limitBytes: args.page.limitBytes,
+              ...(args.page.encoding === undefined
+                ? {}
+                : { encoding: args.page.encoding }),
             });
       } else {
         page = readPageFromWindow({
@@ -287,6 +293,9 @@ export function createSessionInteraction(
           stream: args.page.stream,
           offsetBytes: args.page.offsetBytes,
           limitBytes: args.page.limitBytes,
+          ...(args.page.encoding === undefined
+            ? {}
+            : { encoding: args.page.encoding }),
         });
       }
       if (
@@ -408,6 +417,9 @@ export function createSessionInteraction(
           stream: args.page.stream,
           offsetBytes: args.page.offsetBytes,
           limitBytes: args.page.limitBytes,
+          ...(args.page.encoding === undefined
+            ? {}
+            : { encoding: args.page.encoding }),
         });
       } else {
         const legacyPage = await readHostCommandOutputPage({

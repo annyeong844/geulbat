@@ -35,8 +35,8 @@
       "import": "./dist/daemon/utils/process-fatal-logging.js"
     },
     "./prompt-component-identity": {
-      "types": "./dist/prompt-component-identity.d.ts",
-      "import": "./dist/prompt-component-identity.js"
+      "types": "./dist/daemon/agent/loop-prompt.d.ts",
+      "import": "./dist/daemon/agent/loop-prompt.js"
     },
     "./run-evidence": {
       "types": "./dist/run-evidence.d.ts",

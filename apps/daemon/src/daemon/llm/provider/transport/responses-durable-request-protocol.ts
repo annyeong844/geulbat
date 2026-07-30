@@ -234,9 +234,10 @@ export function serializeResponsesDurableRequestError(
   if (error === null || typeof error !== 'object') {
     return { message };
   }
-  const llmCode = Reflect.get(error, 'llmCode');
-  const status = Reflect.get(error, 'status');
-  const retryAfterMs = Reflect.get(error, 'retryAfterMs');
+  const errorRecord = error as Record<PropertyKey, unknown>;
+  const llmCode = errorRecord['llmCode'];
+  const status = errorRecord['status'];
+  const retryAfterMs = errorRecord['retryAfterMs'];
   return {
     message,
     ...(typeof llmCode === 'string' ? { llmCode } : {}),

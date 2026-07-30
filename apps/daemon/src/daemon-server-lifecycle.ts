@@ -1,12 +1,9 @@
 import type http from 'node:http';
 import { isIP } from 'node:net';
 import type { WebSocketServer } from 'ws';
-import { createLogger } from '@geulbat/structured-logger/logger';
 import type { DaemonRuntimeStateStore } from './daemon/runtime-state-store.js';
 import type { ActiveRunStore } from './daemon/sessions/active-runs.js';
 import { getErrorMessage } from './daemon/utils/error.js';
-
-const logger = createLogger('daemon-server-lifecycle');
 
 type DaemonRuntimeSessionCleanupResult =
   | { ok: true }
@@ -121,12 +118,12 @@ export function listenDaemonHttpServer(args: {
   server: http.Server;
   port: number;
   host: string;
-  reportExposureWarning?: (message: string) => void;
 }): Promise<number> {
   if (!isLoopbackDaemonBindHost(args.host)) {
-    const message = `daemon bind host "${args.host}" is not loopback; local dev-token authentication is intended for single-user local use only`;
-    (args.reportExposureWarning ?? ((warning) => logger.warn(warning)))(
-      message,
+    return Promise.reject(
+      new Error(
+        `daemon bind host "${args.host}" is not loopback; remote binds are unsupported`,
+      ),
     );
   }
 

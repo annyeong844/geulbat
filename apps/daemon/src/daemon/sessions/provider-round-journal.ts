@@ -1,5 +1,6 @@
 import { appendFile, chmod, mkdir, readFile, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   assertRunId,
@@ -17,8 +18,15 @@ import {
   isRunProviderId,
   type RunProviderId,
 } from '@geulbat/protocol/run-contract';
+import {
+  isModelSettlementIdentity,
+  type ModelSettlementIdentity,
+} from '@geulbat/protocol/thread-metadata';
 
-import type { ToolRecoveryStrategy } from '../runtime-contracts.js';
+import {
+  isToolRecoveryStrategy,
+  type ToolRecoveryStrategy,
+} from '../runtime-contracts.js';
 import { isJsonValue, isRecord, type JsonValue } from '../runtime-json.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 
@@ -36,7 +44,13 @@ export interface ProviderRoundJournalRecord {
   precedingTranscriptEntryId: string | null;
   items: JsonValue[];
   functionCalls: ProviderRoundJournalFunctionCall[];
+  modelSettlementIdentity?: ModelSettlementIdentity;
   createdAt: string;
+}
+
+export interface ProviderRoundAppendResult {
+  record: ProviderRoundJournalRecord;
+  changed: boolean;
 }
 
 interface ProviderRoundJournalFunctionCall {
@@ -59,8 +73,9 @@ export async function appendProviderRound(args: {
   precedingTranscriptEntryId: string | null;
   items: readonly unknown[];
   functionCalls: readonly ProviderRoundJournalFunctionCall[];
+  modelSettlementIdentity?: ModelSettlementIdentity;
   now?: () => string;
-}): Promise<ProviderRoundJournalRecord> {
+}): Promise<ProviderRoundAppendResult> {
   if (!Number.isSafeInteger(args.round) || args.round < 0) {
     throw new Error('invalid provider round journal round');
   }
@@ -79,6 +94,12 @@ export async function appendProviderRound(args: {
     args.precedingTranscriptEntryId.trim() === ''
   ) {
     throw new Error('invalid provider round transcript anchor');
+  }
+  if (
+    args.modelSettlementIdentity !== undefined &&
+    !isModelSettlementIdentity(args.modelSettlementIdentity)
+  ) {
+    throw new Error('invalid provider round model settlement identity');
   }
   const items = args.items.map((item) => {
     if (!isRecord(item) || !isJsonValue(item)) {
@@ -115,18 +136,35 @@ export async function appendProviderRound(args: {
     precedingTranscriptEntryId: args.precedingTranscriptEntryId,
     items,
     functionCalls,
+    ...(args.modelSettlementIdentity === undefined
+      ? {}
+      : { modelSettlementIdentity: args.modelSettlementIdentity }),
     createdAt: (args.now ?? (() => new Date().toISOString()))(),
   };
   const path = providerRoundJournalPath(args.stateRoot, args.threadId);
-  await runProviderRoundAppendSerial(path, async () => {
+  return await runProviderRoundAppendSerial(path, async () => {
+    if (record.modelSettlementIdentity !== undefined) {
+      const existing = (
+        await readProviderRoundHistory(args.stateRoot, args.threadId)
+      ).find(
+        (candidate) =>
+          candidate.modelSettlementIdentity === record.modelSettlementIdentity,
+      );
+      if (existing !== undefined) {
+        if (!isSameProviderRoundSettlement(existing, record)) {
+          throw new Error('provider round settlement identity conflict');
+        }
+        return { record: existing, changed: false };
+      }
+    }
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await appendFile(path, `${JSON.stringify(record)}\n`, {
       encoding: 'utf8',
       mode: 0o600,
     });
     await chmod(path, 0o600);
+    return { record, changed: true };
   });
-  return record;
 }
 
 export async function readProviderRoundHistory(
@@ -179,6 +217,9 @@ export async function copyProviderRoundHistory(args: {
       precedingTranscriptEntryId: record.precedingTranscriptEntryId,
       items: record.items,
       functionCalls: record.functionCalls,
+      ...(record.modelSettlementIdentity === undefined
+        ? {}
+        : { modelSettlementIdentity: record.modelSettlementIdentity }),
       now: () => record.createdAt,
     });
     copied += 1;
@@ -243,6 +284,8 @@ function parseProviderRoundJournalRecord(
     !value.items.every((item) => isRecord(item) && isJsonValue(item)) ||
     !Array.isArray(value.functionCalls) ||
     !value.functionCalls.every(isProviderRoundJournalFunctionCall) ||
+    (value.modelSettlementIdentity !== undefined &&
+      !isModelSettlementIdentity(value.modelSettlementIdentity)) ||
     typeof value.createdAt !== 'string'
   ) {
     throw new Error('invalid provider round journal record');
@@ -264,8 +307,20 @@ function parseProviderRoundJournalRecord(
     precedingTranscriptEntryId: value.precedingTranscriptEntryId,
     items: value.items,
     functionCalls: value.functionCalls,
+    ...(value.modelSettlementIdentity === undefined
+      ? {}
+      : { modelSettlementIdentity: value.modelSettlementIdentity }),
     createdAt: value.createdAt,
   };
+}
+
+function isSameProviderRoundSettlement(
+  left: ProviderRoundJournalRecord,
+  right: ProviderRoundJournalRecord,
+): boolean {
+  const { createdAt: _leftCreatedAt, ...leftValue } = left;
+  const { createdAt: _rightCreatedAt, ...rightValue } = right;
+  return isDeepStrictEqual(leftValue, rightValue);
 }
 
 function providerFunctionCallsMatch(
@@ -330,16 +385,6 @@ function isProviderRoundJournalFunctionCall(
     (recoveryStrategy === undefined ||
       (isToolRecoveryStrategy(recoveryStrategy) &&
         value.replaySafe === (recoveryStrategy === 'replay_safe')))
-  );
-}
-
-function isToolRecoveryStrategy(value: unknown): value is ToolRecoveryStrategy {
-  return (
-    value === 'replay_safe' ||
-    value === 'idempotency_key' ||
-    value === 'reconcile_then_replay' ||
-    value === 'durable_handle' ||
-    value === 'at_least_once'
   );
 }
 

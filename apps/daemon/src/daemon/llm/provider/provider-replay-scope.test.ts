@@ -3,9 +3,10 @@ import test from 'node:test';
 
 import type { ProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
 import { resolveProviderRequestOptions } from './provider-options.js';
+import { resolveProviderReplayScopeForRun } from './provider-replay-scope-resolution.js';
 import {
+  assertProviderReplayScope,
   createProviderReplayScopeId,
-  resolveProviderReplayScopeForRun,
 } from './provider-replay-scope.js';
 
 void test('provider replay scope is stable, private, and changes with account or endpoint', () => {
@@ -44,6 +45,31 @@ void test('provider replay scope is stable, private, and changes with account or
   );
   assert.equal(baseline.includes(accountId), false);
   assert.equal(baseline.includes(endpoint), false);
+});
+
+void test('provider replay scope compatibility keeps only current-process unscoped history', () => {
+  const expected = createProviderReplayScopeId({
+    providerId: 'openai_codex_direct',
+    accountId: 'expected-account',
+    endpoint: 'https://example.invalid/expected',
+  });
+  const other = createProviderReplayScopeId({
+    providerId: 'openai_codex_direct',
+    accountId: 'other-account',
+    endpoint: 'https://example.invalid/other',
+  });
+
+  assert.doesNotThrow(() => assertProviderReplayScope(expected, expected));
+  assert.doesNotThrow(() => assertProviderReplayScope(undefined, expected));
+  assert.doesNotThrow(() => assertProviderReplayScope(null, undefined));
+  assert.throws(
+    () => assertProviderReplayScope(null, expected),
+    /different authentication scope/u,
+  );
+  assert.throws(
+    () => assertProviderReplayScope(other, expected),
+    /different authentication scope/u,
+  );
 });
 
 void test('Qwen replay scope uses its HTTP endpoint and credential identity without OAuth', async () => {

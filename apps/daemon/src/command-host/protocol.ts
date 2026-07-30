@@ -20,6 +20,8 @@ export const COMMAND_HOST_CAPABILITIES = {
   initialStdinOnStart: true,
   losslessStdio: true,
   prePersistenceOutputRedaction: true,
+  rawInitialStdinOnStart: true,
+  rawOutputPages: true,
 } as const;
 
 export type CommandHostCapabilities = {
@@ -281,16 +283,25 @@ const commandOutputPageSchema = z
     hasMore: z.boolean(),
     nextOffsetBytes: z.number().int().min(0).nullable(),
     content: z.string(),
+    contentEncoding: z.literal('base64').optional(),
     contentStartOffset: z.number().int().min(0).optional(),
     earliestAvailableOffset: z.number().int().min(0).optional(),
   })
-  .transform(({ contentStartOffset, earliestAvailableOffset, ...page }) => ({
-    ...page,
-    ...(contentStartOffset === undefined ? {} : { contentStartOffset }),
-    ...(earliestAvailableOffset === undefined
-      ? {}
-      : { earliestAvailableOffset }),
-  }));
+  .transform(
+    ({
+      contentEncoding,
+      contentStartOffset,
+      earliestAvailableOffset,
+      ...page
+    }) => ({
+      ...page,
+      ...(contentEncoding === undefined ? {} : { contentEncoding }),
+      ...(contentStartOffset === undefined ? {} : { contentStartOffset }),
+      ...(earliestAvailableOffset === undefined
+        ? {}
+        : { earliestAvailableOffset }),
+    }),
+  );
 
 export const initializeParamsSchema = z.object({
   protocolVersion: z.string(),
@@ -305,6 +316,8 @@ const commandHostCapabilitiesSchema: z.ZodType<CommandHostCapabilities> =
     initialStdinOnStart: z.boolean().default(false),
     losslessStdio: z.boolean().default(false),
     prePersistenceOutputRedaction: z.boolean().default(false),
+    rawInitialStdinOnStart: z.boolean().default(false),
+    rawOutputPages: z.boolean().default(false),
   });
 
 export const initializeResultSchema = z.object({
@@ -317,36 +330,53 @@ export const initializeResultSchema = z.object({
   }),
 });
 
-export const startParamsSchema = z.object({
-  executable: z.string(),
-  // P7.6 §5.1 — 미지정은 thread. system은 데몬 자신이 세우는 세션이다.
-  owner: z.enum(['thread', 'system']).optional(),
-  // P7.6 §5.2 — protocol은 stdout, lossless는 양 스트림 무손실 보존 + 역압.
-  streamMode: z.enum(['tail', 'protocol', 'lossless']).optional(),
-  args: z.array(z.string()),
-  cwd: z.string(),
-  env: z.record(z.string(), z.string()),
-  stateRoot: z.string(),
-  threadId: z.string(),
-  runId: z.string(),
-  callId: z.string(),
-  requiresIdempotentStart: z.literal(true).optional(),
-  stdinMode: z.enum(['closed', 'open']),
-  initialStdin: z.string().optional(),
-  timeoutMs: z.number().int().positive().optional(),
-  maxOutputBytesPerStream: z.number().int().positive().optional(),
-  requiresDeferredOutputRelease: z.literal(true).optional(),
-  outputRedaction: z
-    .object({
-      exactMarkers: z.array(z.string().min(1)).min(1),
-      replacement: z.string(),
-    })
-    .optional(),
-});
+export const startParamsSchema = z
+  .object({
+    executable: z.string(),
+    // P7.6 §5.1 — 미지정은 thread. system은 데몬 자신이 세우는 세션이다.
+    owner: z.enum(['thread', 'system']).optional(),
+    // P7.6 §5.2 — protocol은 stdout, lossless는 양 스트림 무손실 보존 + 역압.
+    streamMode: z.enum(['tail', 'protocol', 'lossless']).optional(),
+    args: z.array(z.string()),
+    cwd: z.string(),
+    env: z.record(z.string(), z.string()),
+    stateRoot: z.string(),
+    threadId: z.string(),
+    runId: z.string(),
+    callId: z.string(),
+    requiresIdempotentStart: z.literal(true).optional(),
+    stdinMode: z.enum(['closed', 'open']),
+    initialStdin: z.string().optional(),
+    initialStdinBase64: z
+      .string()
+      .regex(
+        /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u,
+      )
+      .optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    maxOutputBytesPerStream: z.number().int().positive().optional(),
+    requiresDeferredOutputRelease: z.literal(true).optional(),
+    outputRedaction: z
+      .object({
+        exactMarkers: z.array(z.string().min(1)).min(1),
+        replacement: z.string(),
+      })
+      .optional(),
+  })
+  .refine(
+    (value) =>
+      value.initialStdin === undefined ||
+      value.initialStdinBase64 === undefined,
+    {
+      message:
+        'initialStdin and initialStdinBase64 are mutually exclusive initial byte representations',
+    },
+  );
 
 export const waitInitialParamsSchema = z.object({
   outputRef: z.string(),
   yieldTimeMs: z.number().int().min(0).optional(),
+  requiresOutputRef: z.literal(true).optional(),
 });
 
 export const interactParamsSchema = z.object({
@@ -368,6 +398,7 @@ export const interactParamsSchema = z.object({
       stream: outputStream,
       offsetBytes: z.number().int().min(0),
       limitBytes: z.number().int().min(1),
+      encoding: z.literal('base64').optional(),
       deferRelease: z.boolean().optional(),
       releaseUpToBytes: z.number().int().min(0).optional(),
     })

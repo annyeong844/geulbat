@@ -107,7 +107,9 @@ export function createAgentRetryTool(
           parentRunId: ctx.runState.runId,
           toolCallId: ctx.callId,
           stateRoot: ctx.stateRoot,
-          workingDirectory: ctx.workingDirectory ?? '',
+          ...(ctx.workingDirectory === undefined
+            ? {}
+            : { workingDirectory: ctx.workingDirectory }),
           ...(ctx.permissionMode === undefined
             ? {}
             : { permissionMode: ctx.permissionMode }),
@@ -132,7 +134,9 @@ export function createAgentRetryTool(
           parentRunId: retry.input.parentRunId,
           ownerThreadId: retry.input.ownerThreadId,
           stateRoot: retry.input.stateRoot,
-          workingDirectory: retry.input.workingDirectory,
+          ...(retry.input.workingDirectory === undefined
+            ? {}
+            : { workingDirectory: retry.input.workingDirectory }),
           parentRunState: ctx.runState,
           runtimeServices: ctx.runtimeServices,
           ...(options.startBackgroundRun === undefined
