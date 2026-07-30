@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Keep the process-heavy full test lane bounded. The isolated coverage lane
-  # uses its separately measured four-way override below.
+  # Keep the process-heavy full test lane bounded. Coverage uses its own
+  # c8-specific serial override below, independent from normal test concurrency.
   GEULBAT_TEST_JOBS: 2
 
 jobs:
@@ -120,9 +120,10 @@ jobs:
     name: Daemon coverage
     runs-on: ubuntu-latest
     env:
-      # This job owns its runner. Four-way file sharding completed the same
-      # coverage set substantially faster without competing with another lane.
-      GEULBAT_TEST_JOBS: 4
+      # c8 instruments test children and their Node worker descendants. On
+      # GitHub-hosted runners the four-way process fan-out can stall, while the
+      # same coverage set completes reliably one-way. Normal tests stay parallel.
+      GEULBAT_TEST_JOBS: 1
     steps:
       - name: Checkout
         uses: actions/checkout@v6
