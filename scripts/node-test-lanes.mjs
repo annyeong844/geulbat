@@ -17,14 +17,15 @@ const SERIAL_TEST_LANES = [
 ];
 
 /**
- * Measured long-running files that should enter the bounded parallel pool
- * first. Ordering only changes when a file starts; it never changes isolation,
- * assertions, or lane ownership.
+ * Measured long-running or process-recovery-sensitive files that should enter
+ * the bounded parallel pool first. Ordering only changes when a file starts; it
+ * never changes isolation, assertions, or lane ownership.
  */
 const PRIORITY_TEST_FILES = [
   {
     workspace: 'daemon',
     files: [
+      'dist-test/daemon/agent/loop-tool-recovery.test.js',
       'dist-test/daemon/ptc/lab/browser/core/lab-browser-runtime-script-policy-events.test.js',
       'dist-test/bootstrap-entry.test.js',
       'dist-test/create-daemon.test.js',
