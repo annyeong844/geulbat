@@ -296,7 +296,7 @@ export function resolveDefaultJobs(
 
 async function runTestFile(
   file,
-  { cwd, env, outputDirectory, activeChildren, liveOutput, onUnsafeSettlement },
+  { cwd, env, outputDirectory, activeChildren, onUnsafeSettlement },
 ) {
   const fileId = createHash('sha256').update(file).digest('hex');
   const logPath = resolve(outputDirectory, `${fileId}.log`);
@@ -322,10 +322,6 @@ async function runTestFile(
   activeChildren.add(ownedChild);
   child.stdout.pipe(log, { end: false });
   child.stderr.pipe(log, { end: false });
-  if (liveOutput) {
-    child.stdout.pipe(process.stdout, { end: false });
-    child.stderr.pipe(process.stderr, { end: false });
-  }
 
   const result = await ownedChild.waitForExit();
 
@@ -344,10 +340,6 @@ async function runTestFile(
   }
   child.stdout.unpipe(log);
   child.stderr.unpipe(log);
-  if (liveOutput) {
-    child.stdout.unpipe(process.stdout);
-    child.stderr.unpipe(process.stderr);
-  }
   if (settlementError !== undefined) {
     child.stdout.destroy();
     child.stderr.destroy();
@@ -358,7 +350,6 @@ async function runTestFile(
     ...result,
     ...(settlementError === undefined ? {} : { code: 1, settlementError }),
     file,
-    liveOutput,
     logPath,
     output: await readFile(logPath, 'utf8'),
   };
@@ -367,14 +358,9 @@ async function runTestFile(
 function printResult(result, cwd, testRoot) {
   const label = `\n▶ ${relativeTestPath(result.file, cwd, testRoot)}`;
   const stream = result.code === 0 ? process.stdout : process.stderr;
-  stream.write(`${label}\n`);
-  if (result.liveOutput) {
-    stream.write('Output streamed live above.\n');
-  } else {
-    stream.write(result.output);
-    if (result.output.length > 0 && !result.output.endsWith('\n')) {
-      stream.write('\n');
-    }
+  stream.write(`${label}\n${result.output}`);
+  if (result.output.length > 0 && !result.output.endsWith('\n')) {
+    stream.write('\n');
   }
   if (result.error !== undefined) {
     stream.write(
@@ -423,7 +409,6 @@ async function runPhase(files, options) {
             env: options.env,
             outputDirectory: options.outputDirectory,
             activeChildren: options.scheduler.activeChildren,
-            liveOutput: files[index] === options.liveOutputFile,
             onUnsafeSettlement: options.onUnsafeSettlement,
           })),
           durationMs: Math.round(performance.now() - startedAt),
@@ -499,20 +484,6 @@ export async function runTestFiles(
   const startedAt = performance.now();
   validateSerialTestLanes(lanes, { cwd, testRoot });
   const laneByFile = classifyTestFiles(files, lanes, { cwd, testRoot });
-  const requestedLiveOutputFile =
-    env.GEULBAT_TEST_LIVE_OUTPUT_FILE?.trim() || undefined;
-  const liveOutputFile =
-    requestedLiveOutputFile === undefined
-      ? undefined
-      : files.find(
-          (file) =>
-            relativeTestPath(file, cwd, testRoot) === requestedLiveOutputFile,
-        );
-  if (requestedLiveOutputFile !== undefined && liveOutputFile === undefined) {
-    throw new Error(
-      `GEULBAT_TEST_LIVE_OUTPUT_FILE did not match a selected test file: ${requestedLiveOutputFile}`,
-    );
-  }
   const outputDirectory = await mkdtemp(
     resolve(outputRoot, 'geulbat-node-tests-'),
   );
@@ -557,7 +528,6 @@ export async function runTestFiles(
             cwd,
             env,
             jobs: 1,
-            liveOutputFile,
             outputDirectory,
             onUnsafeSettlement: recordUnsafeSettlement,
             reportProgress,
@@ -571,7 +541,6 @@ export async function runTestFiles(
         cwd,
         env,
         jobs,
-        liveOutputFile,
         outputDirectory,
         onUnsafeSettlement: recordUnsafeSettlement,
         reportProgress,

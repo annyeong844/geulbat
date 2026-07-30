@@ -120,13 +120,9 @@ jobs:
     name: Daemon coverage
     runs-on: ubuntu-latest
     env:
-      # c8 instruments test children and their Node worker descendants. On
-      # GitHub-hosted runners the four-way process fan-out can stall, while the
-      # same coverage set completes reliably one-way. Normal tests stay parallel.
-      GEULBAT_TEST_JOBS: 1
-      # Stream the repeatedly stalled file so a canceled runner preserves the
-      # last completed subtest instead of only its file-level start marker.
-      GEULBAT_TEST_LIVE_OUTPUT_FILE: dist-test/daemon/agent/loop-tool-recovery.test.js
+      # This job owns its runner. Four-way file sharding completed the same
+      # coverage set substantially faster without competing with another lane.
+      GEULBAT_TEST_JOBS: 4
     steps:
       - name: Checkout
         uses: actions/checkout@v6
