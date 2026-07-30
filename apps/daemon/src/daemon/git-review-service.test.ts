@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -19,6 +20,7 @@ import {
 } from './git-review-service.js';
 
 const execFileAsync = promisify(execFile);
+const TEST_CURSOR_KEY = Buffer.alloc(32, 7);
 
 void test('summary pages one immutable observation and release expires it', async (t) => {
   const fixture = await createGitReviewFixture(t);
@@ -114,14 +116,29 @@ void test('summary cursors reject tampering and cross-observation reuse', async 
   }
   assert.ok(first.files.nextCursor);
 
-  assert.deepEqual(
-    await service.summary({
-      kind: 'continue',
+  const [cursorPrefix, cursorPayload] = first.files.nextCursor.split('.');
+  assert.ok(cursorPrefix);
+  assert.ok(cursorPayload);
+  for (const cursor of [
+    `${first.files.nextCursor}x`,
+    'not-a-cursor',
+    `${cursorPrefix}.${cursorPayload}.a`,
+    signTestCursor('git-review-summary-v1', []),
+    signTestCursor('git-review-summary-v1', {
+      kind: 'summary',
       observationId: first.observationId,
-      cursor: `${first.files.nextCursor}x`,
+      offset: 999,
     }),
-    { kind: 'stale', reason: 'cursor_invalid' },
-  );
+  ]) {
+    assert.deepEqual(
+      await service.summary({
+        kind: 'continue',
+        observationId: first.observationId,
+        cursor,
+      }),
+      { kind: 'stale', reason: 'cursor_invalid' },
+    );
+  }
   assert.deepEqual(
     await service.summary({
       kind: 'continue',
@@ -242,6 +259,16 @@ void test('summary returns clean and closed directory/repository states', async 
   assert.equal(clean.kind, 'clean');
   assert.equal(isGitReviewSummaryResult(clean), true);
 
+  const notDirectoryPath = join(fixture.repositoryRoot, 'ordinary.txt');
+  await writeFile(notDirectoryPath, 'ordinary\n');
+  assert.deepEqual(
+    await service.summary({
+      kind: 'start',
+      workingDirectory: notDirectoryPath,
+    }),
+    { kind: 'not_reviewable', reason: 'missing_directory' },
+  );
+
   const missing = await service.summary({
     kind: 'start',
     workingDirectory: join(fixture.repositoryRoot, 'missing'),
@@ -308,6 +335,25 @@ void test('summary projects worktree capture exhaustion as unavailable', async (
       workingDirectory: fixture.repositoryRoot,
     }),
     { kind: 'unavailable', reason: 'resource_limit' },
+  );
+});
+
+void test('service rejects invalid paging, signing, and file boundaries', async (t) => {
+  const fixture = await createGitReviewFixture(t);
+  assert.throws(
+    () => createReviewService(fixture, { pageLimitBytes: 0 }),
+    /pageLimitBytes must be positive/u,
+  );
+  assert.throws(
+    () => createReviewService(fixture, { cursorKey: Buffer.alloc(0) }),
+    /cursor key must not be empty/u,
+  );
+  await assert.rejects(
+    createReviewService(fixture, { maxFileBytes: -1 }).summary({
+      kind: 'start',
+      workingDirectory: fixture.repositoryRoot,
+    }),
+    /maxFileBytes must be non-negative/u,
   );
 });
 
@@ -451,6 +497,14 @@ void test('file capture projects its immutable summary snapshot until an explici
   }
   const file = summary.files.items[0];
   assert.ok(file);
+  assert.deepEqual(
+    await service.file({
+      kind: 'start',
+      observationId: summary.observationId,
+      fileId: 'missing-file',
+    }),
+    { kind: 'stale', reason: 'entry_missing' },
+  );
 
   await writeFile(
     join(fixture.repositoryRoot, 'tracked.txt'),
@@ -593,6 +647,22 @@ void test('file capture projects its immutable summary snapshot until an explici
       reason: 'cursor_mismatch',
     });
   }
+  assert.deepEqual(
+    await service.file({
+      kind: 'continue',
+      observationId: summary.observationId,
+      fileId: file.fileId,
+      fileObservationId: started.fileObservationId,
+      cursor: signTestCursor('git-review-file-v1', {
+        kind: 'file',
+        observationId: summary.observationId,
+        fileId: file.fileId,
+        fileObservationId: started.fileObservationId,
+        offset: 999,
+      }),
+    }),
+    { kind: 'stale', reason: 'cursor_invalid' },
+  );
 
   assert.deepEqual(
     service.release({
@@ -626,6 +696,28 @@ void test('file capture projects its immutable summary snapshot until an explici
     fileId: file.fileId,
   });
   assert.equal(recaptured.kind, 'ready');
+  service.release({
+    kind: 'summary',
+    observationId: summary.observationId,
+  });
+  assert.deepEqual(
+    await service.file({
+      kind: 'continue',
+      observationId: summary.observationId,
+      fileId: file.fileId,
+      fileObservationId: started.fileObservationId,
+      cursor: started.rows.nextCursor,
+    }),
+    { kind: 'stale', reason: 'observation_expired' },
+  );
+  assert.deepEqual(
+    await service.file({
+      kind: 'start',
+      observationId: summary.observationId,
+      fileId: file.fileId,
+    }),
+    { kind: 'stale', reason: 'observation_expired' },
+  );
 });
 
 void test('file continuation remains in its captured observation after index and HEAD mutation', async (t) => {
@@ -967,7 +1059,7 @@ void test('decoder-unsafe text attributes remain metadata-only', async (t) => {
   );
   await writeFile(
     join(fixture.repositoryRoot, 'unsafe.txt'),
-    Buffer.from([0xff, 0x41, 0x0a]),
+    Buffer.concat([Buffer.alloc(100, 0x61), Buffer.from([0xff, 0x0a])]),
   );
 
   const service = createReviewService(fixture);
@@ -1021,6 +1113,12 @@ void test('display paths preserve Unicode and escape ambiguous bytes', () => {
     escapeGitReviewDisplayPath(Buffer.from('safe\u202epath')),
     'safe\\xe2\\x80\\xaepath',
   );
+  assert.equal(
+    escapeGitReviewDisplayPath(
+      Buffer.from([0x09, 0x0d, 0xc2, 0x20, 0xc2, 0xa2, 0xf0, 0x9f, 0x98, 0x80]),
+    ),
+    '\\t\\r\\xc2 ¢😀',
+  );
 });
 
 void test('structured line diff preserves duplicate-line edits deterministically', () => {
@@ -1054,6 +1152,26 @@ void test('structured line diff preserves duplicate-line edits deterministically
       after: { lines: ['same'], endsWithNewline: true },
     }),
     [],
+  );
+  assert.deepEqual(
+    buildGitReviewDiffRows({
+      sectionId: 'section-1',
+      before: { lines: ['before', 'tail'], endsWithNewline: false },
+      after: { lines: ['after', 'tail'], endsWithNewline: false },
+    })
+      .filter((row) => row.kind === 'metadata')
+      .map((row) => row.content),
+    ['\\ No newline at end of file'],
+  );
+  assert.deepEqual(
+    buildGitReviewDiffRows({
+      sectionId: 'section-1',
+      before: { lines: [], endsWithNewline: true },
+      after: { lines: ['added'], endsWithNewline: false },
+    })
+      .filter((row) => row.kind === 'metadata')
+      .map((row) => row.content),
+    ['\\ No newline at end of after file'],
   );
 });
 
@@ -1137,6 +1255,7 @@ function createReviewService(
   fixture: GitReviewFixture,
   options: {
     coordinateBase?: string;
+    cursorKey?: Buffer;
     pageLimitBytes?: number;
     maxOutputBytesPerStream?: number;
     maxFileBytes?: number;
@@ -1152,7 +1271,7 @@ function createReviewService(
     pageLimitBytes: options.pageLimitBytes ?? 1024 * 1024,
     maxOutputBytesPerStream: options.maxOutputBytesPerStream ?? 1024 * 1024,
     maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
-    cursorKey: Buffer.alloc(32, 7),
+    cursorKey: options.cursorKey ?? TEST_CURSOR_KEY,
     createId: () => `id-${String((nextId += 1))}`,
     now: () => new Date('2026-07-29T15:00:00.000Z'),
   });
@@ -1170,4 +1289,15 @@ async function runGit(cwd: string, args: readonly string[]): Promise<void> {
       GIT_TERMINAL_PROMPT: '0',
     },
   });
+}
+
+function signTestCursor(prefix: string, payload: unknown): string {
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
+    'base64url',
+  );
+  const signed = `${prefix}.${encodedPayload}`;
+  const signature = createHmac('sha256', TEST_CURSOR_KEY)
+    .update(signed)
+    .digest('base64url');
+  return `${signed}.${signature}`;
 }

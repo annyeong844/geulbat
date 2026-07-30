@@ -22,8 +22,13 @@ import { createCommandSessionHost } from '../command-host/session-core.js';
 import {
   buildGitInspectionEnvironment,
   captureGitObjectIndexSnapshot,
+  decodeGitAscii,
+  decodeGitSingleLine,
   GIT_INSPECTION_GLOBAL_ARGUMENTS,
+  gitModeClass,
+  readNodeErrorCode,
   readGitBlobObject,
+  splitGitNulRecords,
 } from './git-inspection-command.js';
 import {
   buildGitLogicalEntries,
@@ -124,6 +129,14 @@ void test('Git inspection global arguments pin read-only process behavior', () =
     '-c',
     'credential.helper=',
   ]);
+});
+
+void test('Git inspection scalar decoders reject ambiguous boundary values', () => {
+  assert.equal(splitGitNulRecords(Buffer.from([0])), undefined);
+  assert.equal(decodeGitAscii(Buffer.from([0x80])), undefined);
+  assert.equal(decodeGitSingleLine(Buffer.from([0xc2, 0x0a])), undefined);
+  assert.equal(gitModeClass('040000'), 'unknown');
+  assert.equal(readNodeErrorCode(new Error('without a code')), undefined);
 });
 
 void linuxTest(
@@ -294,6 +307,14 @@ void linuxTest(
     const root = await createCaptureRoot(t);
     await writeFile(join(root, 'large.txt'), 'five!', 'utf8');
 
+    await assert.rejects(
+      captureGitWorktreeFile({
+        repositoryRoot: root,
+        relativePath: Buffer.from('large.txt'),
+        maxBytes: -1,
+      }),
+      /maxBytes must be non-negative/u,
+    );
     assert.deepEqual(
       await captureGitWorktreeFile({
         repositoryRoot: root,
@@ -833,12 +854,13 @@ void linuxTest(
     const fixture = await createGitInspectionFixture(t);
     await writeFile(
       join(fixture.repositoryRoot, '.gitattributes'),
-      'preserved.txt -text\n',
+      'preserved.txt -text\nlegacy.txt crlf=input\n',
     );
     await writeFile(
       join(fixture.repositoryRoot, 'preserved.txt'),
       'kept\r\nas-crlf\r\n',
     );
+    await writeFile(join(fixture.repositoryRoot, 'legacy.txt'), 'before\n');
     await writeFile(
       join(fixture.repositoryRoot, 'diagnostic.pipe'),
       'regular placeholder\n',
@@ -868,12 +890,17 @@ void linuxTest(
     );
     await writeFile(
       join(fixture.repositoryRoot, '.gitattributes'),
-      'preserved.txt text=auto\n',
+      'preserved.txt text=auto\nlegacy.txt crlf=input\n',
     );
     await writeFile(
       join(fixture.repositoryRoot, 'preserved.txt'),
       'kept\r\nas-crlf\r\n',
     );
+    await writeFile(
+      join(fixture.repositoryRoot, 'legacy.txt'),
+      'after\r\nchanged\r\n',
+    );
+    await runGit(fixture.repositoryRoot, ['config', 'core.autocrlf', 'input']);
     await runGit(fixture.repositoryRoot, ['config', 'core.filemode', 'false']);
     await chmod(join(fixture.repositoryRoot, 'preserved.txt'), 0o755);
 
@@ -919,6 +946,12 @@ void linuxTest(
         entry.path.equals(Buffer.from('preserved.txt')),
       )?.canonicalContent,
       Buffer.from('kept\r\nas-crlf\r\n'),
+    );
+    assert.deepEqual(
+      captured.contents.find((entry) =>
+        entry.path.equals(Buffer.from('legacy.txt')),
+      )?.canonicalContent,
+      Buffer.from('after\nchanged\n'),
     );
   },
 );
@@ -1400,22 +1433,27 @@ void test('worktree canonicalization matches Git raw, text, auto, ident, and UTF
     'auto.txt text=auto',
     'binary.bin text=auto',
     'ident.txt -text ident',
+    'ident-open.txt -text ident',
+    'ident-multiline.txt -text ident',
+    'control.bin -text',
     'utf8.txt text working-tree-encoding=UTF8',
     'auto-preserved.txt -text',
     '',
   ].join('\n');
   await writeFile(join(fixture.repositoryRoot, '.gitattributes'), attributes);
 
+  const rawPolicy = {
+    text: 'raw',
+    ident: false,
+    workingTreeEncoding: null,
+    indexHasCrLf: false,
+  } as const;
+  const identPolicy = { ...rawPolicy, ident: true } as const;
   const cases = [
     {
       path: 'raw.bin',
       content: Buffer.from([0, 0x0d, 0x0a, 0xff]),
-      policy: {
-        text: 'raw' as const,
-        ident: false,
-        workingTreeEncoding: null,
-        indexHasCrLf: false,
-      },
+      policy: rawPolicy,
       expected: Buffer.from([0, 0x0d, 0x0a, 0xff]),
       contentKind: 'binary',
     },
@@ -1458,14 +1496,30 @@ void test('worktree canonicalization matches Git raw, text, auto, ident, and UTF
     {
       path: 'ident.txt',
       content: Buffer.from('before $Id: old value $ after\n'),
-      policy: {
-        text: 'raw' as const,
-        ident: true,
-        workingTreeEncoding: null,
-        indexHasCrLf: false,
-      },
+      policy: identPolicy,
       expected: Buffer.from('before $Id$ after\n'),
       contentKind: 'text',
+    },
+    {
+      path: 'ident-open.txt',
+      content: Buffer.from('before $Id: without a closing marker\n'),
+      policy: identPolicy,
+      expected: Buffer.from('before $Id: without a closing marker\n'),
+      contentKind: 'text',
+    },
+    {
+      path: 'ident-multiline.txt',
+      content: Buffer.from('before $Id: first line\nsecond line $ after\n'),
+      policy: identPolicy,
+      expected: Buffer.from('before $Id: first line\nsecond line $ after\n'),
+      contentKind: 'text',
+    },
+    {
+      path: 'control.bin',
+      content: Buffer.from([0x0d, 0x7f, 0x08, 0x01, 0x1a]),
+      policy: rawPolicy,
+      expected: Buffer.from([0x0d, 0x7f, 0x08, 0x01, 0x1a]),
+      contentKind: 'binary',
     },
     {
       path: 'utf8.txt',
