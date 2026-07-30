@@ -2675,13 +2675,13 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
   let interruptedArchive: HostCommandFullOutputArchiveHandle | undefined;
   let replacement: ReturnType<typeof createDaemonContext> | undefined;
   t.after(async () => {
-    t.diagnostic('exec-recovery milestone: cleanup started');
+    console.log('exec-recovery milestone: cleanup started');
     if (replacement !== undefined) {
       const sessions = await replacement.hostCommands.listThreadSessions({
         stateRoot,
         threadId,
       });
-      t.diagnostic(
+      console.log(
         `exec-recovery milestone: cleanup found ${String(sessions.length)} replacement session(s)`,
       );
       for (const session of sessions) {
@@ -2693,20 +2693,20 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
           yieldTimeMs: 0,
         });
       }
-      t.diagnostic('exec-recovery milestone: replacement sessions terminated');
+      console.log('exec-recovery milestone: replacement sessions terminated');
       await replacement.hostCommands.closeAll();
-      t.diagnostic('exec-recovery milestone: replacement host closed');
+      console.log('exec-recovery milestone: replacement host closed');
     }
     if (!originalClosed) {
       await original.hostCommands.closeAll();
-      t.diagnostic('exec-recovery milestone: original host closed by cleanup');
+      console.log('exec-recovery milestone: original host closed by cleanup');
     }
     await interruptedArchive?.completed;
-    t.diagnostic('exec-recovery milestone: archive completion observed');
+    console.log('exec-recovery milestone: archive completion observed');
     await removeCommandHostWorkspace(stateRoot);
-    t.diagnostic('exec-recovery milestone: command workspace removed');
+    console.log('exec-recovery milestone: command workspace removed');
     await rm(stateRoot, { recursive: true, force: true });
-    t.diagnostic('exec-recovery milestone: cleanup completed');
+    console.log('exec-recovery milestone: cleanup completed');
   });
   await original.runCheckpoints.startRun({
     runId,
@@ -2734,14 +2734,14 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
   const interruptedHost: HostCommandRuntime = {
     ...original.hostCommands,
     async start(startArgs) {
-      t.diagnostic('exec-recovery milestone: interrupted host start entered');
+      console.log('exec-recovery milestone: interrupted host start entered');
       const invocation = (
         await original.runCheckpoints.readThread(threadId)
       )?.toolInvocations.find((candidate) => candidate.callId === callId);
       assert.equal(invocation?.status, 'in_flight');
-      t.diagnostic('exec-recovery milestone: in-flight checkpoint observed');
+      console.log('exec-recovery milestone: in-flight checkpoint observed');
       const started = await original.hostCommands.start(startArgs);
-      t.diagnostic('exec-recovery milestone: original host start returned');
+      console.log('exec-recovery milestone: original host start returned');
       assert.equal(started.ok, true);
       if (started.ok) {
         originalOutputRef = started.outputRef;
@@ -2749,14 +2749,14 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
       return started;
     },
     async waitForInitialResult(waitArgs) {
-      t.diagnostic('exec-recovery milestone: initial result wait entered');
+      console.log('exec-recovery milestone: initial result wait entered');
       const waited = await original.hostCommands.waitForInitialResult(waitArgs);
-      t.diagnostic('exec-recovery milestone: initial result wait returned');
+      console.log('exec-recovery milestone: initial result wait returned');
       assert.equal(waited.ok, true);
       throw new Error('simulated daemon loss after exec_command session claim');
     },
   };
-  t.diagnostic('exec-recovery milestone: interrupted execute invoked');
+  console.log('exec-recovery milestone: interrupted execute invoked');
   await assert.rejects(
     execCommandTool.execute(commandArgs, {
       kind: 'agent',
@@ -2784,7 +2784,7 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
     }),
     /simulated daemon loss/u,
   );
-  t.diagnostic('exec-recovery milestone: interrupted command claimed');
+  console.log('exec-recovery milestone: interrupted command claimed');
   assert.match(originalOutputRef ?? '', /^command-output:/u);
   if (originalOutputRef === undefined) {
     assert.fail('expected the interrupted command output reference');
@@ -2803,14 +2803,14 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
     assert.fail('expected the interrupted full-output archive owner');
   }
   interruptedArchive = activeArchive;
-  t.diagnostic('exec-recovery milestone: output archive activated');
+  console.log('exec-recovery milestone: output archive activated');
 
   const disconnected = await original.hostCommands.closeAll();
   assert.equal(disconnected.ok, true);
   originalClosed = true;
-  t.diagnostic('exec-recovery milestone: original host disconnected');
+  console.log('exec-recovery milestone: original host disconnected');
   const interruptedArchiveResult = await interruptedArchive.completed;
-  t.diagnostic('exec-recovery milestone: interrupted archive settled');
+  console.log('exec-recovery milestone: interrupted archive settled');
   assert.equal(interruptedArchiveResult.ok, false);
   if (interruptedArchiveResult.ok) {
     assert.fail('expected the interrupted full-output archive to stop');
@@ -2835,7 +2835,7 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
       onEvent() {},
     },
   });
-  t.diagnostic('exec-recovery milestone: pending call recovered');
+  console.log('exec-recovery milestone: pending call recovered');
 
   assert.equal(recovered.recoveredCallCount, 1);
   const resultEntry = (await readTranscriptEntries(stateRoot, threadId)).find(
@@ -2866,7 +2866,7 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
     await readCheckpointToolInvocations({ stateRoot, threadId }),
     [],
   );
-  t.diagnostic('exec-recovery milestone: assertions completed');
+  console.log('exec-recovery milestone: assertions completed');
 });
 
 void test('restart recovery replays set_thread_title after its durable effect without rewriting the title', async (t) => {
