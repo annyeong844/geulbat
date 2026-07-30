@@ -2734,11 +2734,14 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
   const interruptedHost: HostCommandRuntime = {
     ...original.hostCommands,
     async start(startArgs) {
+      t.diagnostic('exec-recovery milestone: interrupted host start entered');
       const invocation = (
         await original.runCheckpoints.readThread(threadId)
       )?.toolInvocations.find((candidate) => candidate.callId === callId);
       assert.equal(invocation?.status, 'in_flight');
+      t.diagnostic('exec-recovery milestone: in-flight checkpoint observed');
       const started = await original.hostCommands.start(startArgs);
+      t.diagnostic('exec-recovery milestone: original host start returned');
       assert.equal(started.ok, true);
       if (started.ok) {
         originalOutputRef = started.outputRef;
@@ -2746,11 +2749,14 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
       return started;
     },
     async waitForInitialResult(waitArgs) {
+      t.diagnostic('exec-recovery milestone: initial result wait entered');
       const waited = await original.hostCommands.waitForInitialResult(waitArgs);
+      t.diagnostic('exec-recovery milestone: initial result wait returned');
       assert.equal(waited.ok, true);
       throw new Error('simulated daemon loss after exec_command session claim');
     },
   };
+  t.diagnostic('exec-recovery milestone: interrupted execute invoked');
   await assert.rejects(
     execCommandTool.execute(commandArgs, {
       kind: 'agent',
