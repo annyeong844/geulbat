@@ -80,6 +80,11 @@ export function createDaemonHostCommandRuntime(
   const leases = new Map<string, Promise<LeaseOutcome>>();
   const placements = new Map<string, LeaseOutcome>();
   const releases: Array<() => Promise<void>> = [];
+  // This facade belongs to one daemon generation. A worker and its claimed
+  // sessions may survive a disconnect, but detached work from the closed
+  // facade must not acquire a new lease and reattach as if it were a
+  // replacement daemon.
+  let closed = false;
 
   function ensureLease(stateRoot: string): Promise<LeaseOutcome> {
     const existing = leases.get(stateRoot);
@@ -192,6 +197,13 @@ export function createDaemonHostCommandRuntime(
 
   return {
     async start(args) {
+      if (closed) {
+        return {
+          ok: false,
+          reasonCode: 'runtime_closed',
+          message: 'host command runtime is closed.',
+        };
+      }
       const lease = await ensureLease(args.stateRoot);
       if (!lease.ok) {
         return {
@@ -204,6 +216,13 @@ export function createDaemonHostCommandRuntime(
     },
 
     async waitForInitialResult(args) {
+      if (closed) {
+        return {
+          ok: false,
+          reasonCode: 'not_found',
+          message: 'host command runtime is closed.',
+        };
+      }
       // start·interact와 같은 문을 쓴다. 이 동사만 lease를 건너뛰면, 아직
       // 이 stateRoot를 다룬 적 없는 데몬이 기존 세션을 이어받을 때 배치가
       // 확정되지 않아 인라인으로 새는 창이 생긴다.
@@ -235,6 +254,13 @@ export function createDaemonHostCommandRuntime(
     },
 
     async interact(args) {
+      if (closed) {
+        return {
+          ok: false,
+          reasonCode: 'output_store_failed',
+          message: 'command-host connection was lost.',
+        };
+      }
       const lease = await ensureLease(args.stateRoot);
       if (!lease.ok) {
         return {
@@ -247,11 +273,15 @@ export function createDaemonHostCommandRuntime(
     },
 
     async listThreadSessions(args) {
+      if (closed) {
+        return [];
+      }
       const lease = await ensureLease(args.stateRoot);
       return lease.ok ? await runtimeFor(lease).listThreadSessions(args) : [];
     },
 
     async closeAll(args) {
+      closed = true;
       // 워커 링크는 disconnect, 인라인 세션은 종료 — 각 배치의 규범이 다르다.
       const clientResult = await client.closeAll(args);
       const inlineResult = await inline.closeAll(args);
@@ -264,6 +294,12 @@ export function createDaemonHostCommandRuntime(
     },
 
     async activeOutputRefs(stateRoot) {
+      if (closed) {
+        return {
+          ok: false,
+          reason: 'host command runtime is closed.',
+        };
+      }
       const placement = placements.get(stateRoot);
       if (placement !== undefined && placement.ok) {
         return placement.placement === 'worker'
@@ -284,6 +320,12 @@ export function createDaemonHostCommandRuntime(
     },
 
     async describeState(stateRoot) {
+      if (closed) {
+        return {
+          mode: null,
+          diagnostic: 'command_host_runtime_closed',
+        };
+      }
       const placement = await ensureLease(stateRoot);
       return placement.ok
         ? { mode: placement.placement, diagnostic: placement.diagnostic }

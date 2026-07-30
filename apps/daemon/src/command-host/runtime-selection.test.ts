@@ -498,6 +498,50 @@ void test('worker mode drives a real detached worker over the socket', async (t)
   }
 });
 
+void test('a closed daemon runtime cannot reattach its surviving worker session', async (t) => {
+  const stateRoot = await makeStateRoot(t);
+  const runtime = makeRuntime('worker');
+  const started = await runtime.start({
+    executable: process.execPath,
+    args: ['-e', 'process.stdin.resume()'],
+    cwd: stateRoot,
+    env: process.env,
+    stateRoot,
+    threadId: THREAD_ID,
+    runId: 'run-closed-runtime',
+    callId: 'call-closed-runtime',
+    stdinMode: 'open',
+  });
+  assert.equal(started.ok, true);
+  if (!started.ok) {
+    return;
+  }
+  const claimed = await runtime.waitForInitialResult({
+    stateRoot,
+    outputRef: started.outputRef,
+    yieldTimeMs: 0,
+  });
+  assert.equal(claimed.ok, true);
+  if (!claimed.ok) {
+    return;
+  }
+
+  assert.deepEqual(await runtime.closeAll(), { ok: true });
+  assert.deepEqual(
+    await runtime.interact({
+      stateRoot,
+      threadId: THREAD_ID,
+      outputRef: started.outputRef,
+      yieldTimeMs: 0,
+    }),
+    {
+      ok: false,
+      reasonCode: 'output_store_failed',
+      message: 'command-host connection was lost.',
+    },
+  );
+});
+
 void test('worker mode routes the initial wait to the owning workspace', async (t) => {
   const first = await makeStateRoot(t);
   const second = await makeStateRoot(t);
