@@ -311,6 +311,24 @@ void test('summary projects worktree capture exhaustion as unavailable', async (
   );
 });
 
+void test('summary closes Git blob output exhaustion as unavailable', async (t) => {
+  const fixture = await createGitReviewFixture(t);
+  const maxOutputBytesPerStream = 1024;
+  const filePath = join(fixture.repositoryRoot, 'large.txt');
+  await writeFile(filePath, Buffer.alloc(maxOutputBytesPerStream + 1, 0x61));
+  await runGit(fixture.repositoryRoot, ['add', 'large.txt']);
+  await runGit(fixture.repositoryRoot, ['commit', '-qm', 'initial']);
+  await writeFile(filePath, Buffer.alloc(maxOutputBytesPerStream + 1, 0x62));
+
+  assert.deepEqual(
+    await createReviewService(fixture, { maxOutputBytesPerStream }).summary({
+      kind: 'start',
+      workingDirectory: fixture.repositoryRoot,
+    }),
+    { kind: 'unavailable', reason: 'resource_limit' },
+  );
+});
+
 void test('summary closes unsupported non-UTF-8 worktree encoding', async (t) => {
   const fixture = await createGitReviewFixture(t);
   await writeFile(join(fixture.repositoryRoot, 'tracked.txt'), 'before\n');
@@ -409,7 +427,7 @@ void test('optional unsupported rename candidate stays delete-add and projects m
   );
 });
 
-void test('file capture accepts live same-structure content and keeps continuation immutable', async (t) => {
+void test('file capture projects its immutable summary snapshot until an explicit refresh', async (t) => {
   const fixture = await createGitReviewFixture(t);
   await writeFile(
     join(fixture.repositoryRoot, 'tracked.txt'),
@@ -453,10 +471,6 @@ void test('file capture accepts live same-structure content and keeps continuati
   assert.ok(started.rows.nextCursor);
   const rows = [...started.rows.items];
 
-  await writeFile(
-    join(fixture.repositoryRoot, 'tracked.txt'),
-    'one\ntwo\npost-capture\nfour\n',
-  );
   let cursor: string | null = started.rows.nextCursor;
   while (cursor !== null) {
     const continued = await service.file({
@@ -475,15 +489,69 @@ void test('file capture accepts live same-structure content and keeps continuati
     cursor = continued.rows.nextCursor;
   }
   assert.equal(
-    rows.some((row) => row.kind === 'addition' && row.content === 'live'),
+    rows.some((row) => row.kind === 'addition' && row.content === 'summary'),
     true,
   );
   assert.equal(
-    rows.some((row) => row.kind === 'addition' && row.content === 'live-tail'),
+    rows.some((row) => row.content.includes('live')),
+    false,
+  );
+
+  const refreshedSummary = await service.summary({
+    kind: 'start',
+    workingDirectory: fixture.repositoryRoot,
+  });
+  assert.equal(refreshedSummary.kind, 'changed');
+  if (refreshedSummary.kind !== 'changed') {
+    return;
+  }
+  const refreshedFile = refreshedSummary.files.items[0];
+  assert.ok(refreshedFile);
+  const refreshed = await service.file({
+    kind: 'start',
+    observationId: refreshedSummary.observationId,
+    fileId: refreshedFile.fileId,
+  });
+  assert.equal(refreshed.kind, 'ready');
+  if (refreshed.kind !== 'ready') {
+    return;
+  }
+  const refreshedRows = [...refreshed.rows.items];
+
+  await writeFile(
+    join(fixture.repositoryRoot, 'tracked.txt'),
+    'one\ntwo\npost-capture\nfour\n',
+  );
+  cursor = refreshed.rows.nextCursor;
+  while (cursor !== null) {
+    const continued = await service.file({
+      kind: 'continue',
+      observationId: refreshedSummary.observationId,
+      fileId: refreshedFile.fileId,
+      fileObservationId: refreshed.fileObservationId,
+      cursor,
+    });
+    assert.equal(continued.kind, 'ready');
+    if (continued.kind !== 'ready') {
+      return;
+    }
+    refreshedRows.push(...continued.rows.items);
+    cursor = continued.rows.nextCursor;
+  }
+  assert.equal(
+    refreshedRows.some(
+      (row) => row.kind === 'addition' && row.content === 'live',
+    ),
     true,
   );
   assert.equal(
-    rows.some((row) => row.content.includes('post-capture')),
+    refreshedRows.some(
+      (row) => row.kind === 'addition' && row.content === 'live-tail',
+    ),
+    true,
+  );
+  assert.equal(
+    refreshedRows.some((row) => row.content.includes('post-capture')),
     false,
   );
 
@@ -716,7 +784,57 @@ void test('file capture projects binary content as metadata only', async (t) => 
   assert.equal(result.rows.items[0]?.kind, 'metadata');
 });
 
-void test('file capture rejects drift in an exact unstaged rename proof', async (t) => {
+void test('merge conflicts remain reviewable as one staged file', async (t) => {
+  const fixture = await createGitReviewFixture(t);
+  const path = join(fixture.repositoryRoot, 'conflict.txt');
+  await writeFile(path, 'base\n');
+  await runGit(fixture.repositoryRoot, ['add', 'conflict.txt']);
+  await runGit(fixture.repositoryRoot, ['commit', '-qm', 'base']);
+  await runGit(fixture.repositoryRoot, ['checkout', '-qb', 'other']);
+  await writeFile(path, 'other\n');
+  await runGit(fixture.repositoryRoot, ['commit', '-qam', 'other']);
+  await runGit(fixture.repositoryRoot, ['checkout', '-q', 'main']);
+  await writeFile(path, 'main\n');
+  await runGit(fixture.repositoryRoot, ['commit', '-qam', 'main']);
+  await assert.rejects(
+    runGit(fixture.repositoryRoot, ['merge', '--no-edit', 'other']),
+  );
+
+  const service = createReviewService(fixture);
+  const summary = await service.summary({
+    kind: 'start',
+    workingDirectory: fixture.repositoryRoot,
+  });
+  assert.equal(summary.kind, 'changed');
+  if (summary.kind !== 'changed') {
+    return;
+  }
+  assert.equal(summary.files.items.length, 1);
+  const file = summary.files.items[0];
+  assert.ok(file);
+  assert.equal(file.displayPath, 'conflict.txt');
+  assert.deepEqual(
+    file.layers.map((layer) => [layer.comparison, layer.state]),
+    [['conflict', 'conflicted']],
+  );
+
+  const result = await service.file({
+    kind: 'start',
+    observationId: summary.observationId,
+    fileId: file.fileId,
+  });
+  assert.equal(result.kind, 'ready');
+  if (result.kind !== 'ready') {
+    return;
+  }
+  assert.equal(result.sections[0]?.projection, 'conflict');
+  assert.equal(
+    result.rows.items[0]?.content,
+    'Unmerged Git index stages: 1, 2, 3.',
+  );
+});
+
+void test('exact unstaged rename remains immutable until refresh captures its drift', async (t) => {
   const fixture = await createGitReviewFixture(t);
   await writeFile(join(fixture.repositoryRoot, 'old.txt'), 'same\n');
   await runGit(fixture.repositoryRoot, ['add', 'old.txt']);
@@ -738,17 +856,30 @@ void test('file capture rejects drift in an exact unstaged rename proof', async 
   assert.equal(file.layers[0]?.state, 'renamed');
 
   await writeFile(join(fixture.repositoryRoot, 'new.txt'), 'different\n');
-  assert.deepEqual(
-    await service.file({
-      kind: 'start',
-      observationId: summary.observationId,
-      fileId: file.fileId,
-    }),
-    { kind: 'stale', reason: 'observation_changed' },
+  const original = await service.file({
+    kind: 'start',
+    observationId: summary.observationId,
+    fileId: file.fileId,
+  });
+  assert.equal(original.kind, 'ready');
+
+  const refreshed = await service.summary({
+    kind: 'start',
+    workingDirectory: fixture.repositoryRoot,
+  });
+  assert.equal(refreshed.kind, 'changed');
+  if (refreshed.kind !== 'changed') {
+    return;
+  }
+  assert.equal(
+    refreshed.files.items.some((candidate) =>
+      candidate.layers.some((layer) => layer.state === 'renamed'),
+    ),
+    false,
   );
 });
 
-void test('file capture rejects a newly ambiguous exact rename proof', async (t) => {
+void test('exact rename remains immutable until refresh captures new ambiguity', async (t) => {
   const fixture = await createGitReviewFixture(t);
   await writeFile(join(fixture.repositoryRoot, 'old.txt'), 'same\n');
   await runGit(fixture.repositoryRoot, ['add', 'old.txt']);
@@ -770,13 +901,26 @@ void test('file capture rejects a newly ambiguous exact rename proof', async (t)
   assert.equal(file.layers[0]?.state, 'renamed');
 
   await writeFile(join(fixture.repositoryRoot, 'duplicate.txt'), 'same\n');
-  assert.deepEqual(
-    await service.file({
-      kind: 'start',
-      observationId: summary.observationId,
-      fileId: file.fileId,
-    }),
-    { kind: 'stale', reason: 'observation_changed' },
+  const original = await service.file({
+    kind: 'start',
+    observationId: summary.observationId,
+    fileId: file.fileId,
+  });
+  assert.equal(original.kind, 'ready');
+
+  const refreshed = await service.summary({
+    kind: 'start',
+    workingDirectory: fixture.repositoryRoot,
+  });
+  assert.equal(refreshed.kind, 'changed');
+  if (refreshed.kind !== 'changed') {
+    return;
+  }
+  assert.equal(
+    refreshed.files.items.some((candidate) =>
+      candidate.layers.some((layer) => layer.state === 'renamed'),
+    ),
+    false,
   );
 });
 
@@ -913,6 +1057,52 @@ void test('structured line diff preserves duplicate-line edits deterministically
   );
 });
 
+void test('newline-only EOF changes remain visible in totals and file rows', async (t) => {
+  const fixture = await createGitReviewFixture(t);
+  const filePath = join(fixture.repositoryRoot, 'newline.txt');
+  await writeFile(filePath, 'same');
+  await runGit(fixture.repositoryRoot, ['add', 'newline.txt']);
+  await runGit(fixture.repositoryRoot, ['commit', '-qm', 'baseline']);
+  await writeFile(filePath, 'same\n');
+
+  const service = createReviewService(fixture);
+  const summary = await service.summary({
+    kind: 'start',
+    workingDirectory: fixture.repositoryRoot,
+  });
+  assert.equal(summary.kind, 'changed');
+  if (summary.kind !== 'changed') {
+    return;
+  }
+  assert.deepEqual(summary.totals, {
+    fileCount: 1,
+    additions: 1,
+    deletions: 1,
+    lineStatsComplete: true,
+  });
+  const file = summary.files.items[0];
+  assert.ok(file);
+
+  const result = await service.file({
+    kind: 'start',
+    observationId: summary.observationId,
+    fileId: file.fileId,
+  });
+  assert.equal(result.kind, 'ready');
+  if (result.kind !== 'ready') {
+    return;
+  }
+  assert.deepEqual(
+    result.rows.items.map((row) => [row.kind, row.content]),
+    [
+      ['hunk', '@@ -1 +1 @@'],
+      ['deletion', 'same'],
+      ['metadata', '\\ No newline at end of before file'],
+      ['addition', 'same'],
+    ],
+  );
+});
+
 interface GitReviewFixture {
   host: ReturnType<typeof createCommandSessionHost>;
   repositoryRoot: string;
@@ -948,6 +1138,7 @@ function createReviewService(
   options: {
     coordinateBase?: string;
     pageLimitBytes?: number;
+    maxOutputBytesPerStream?: number;
     maxFileBytes?: number;
   } = {},
 ) {
@@ -959,7 +1150,7 @@ function createReviewService(
       ? {}
       : { coordinateBase: options.coordinateBase }),
     pageLimitBytes: options.pageLimitBytes ?? 1024 * 1024,
-    maxOutputBytesPerStream: 1024 * 1024,
+    maxOutputBytesPerStream: options.maxOutputBytesPerStream ?? 1024 * 1024,
     maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
     cursorKey: Buffer.alloc(32, 7),
     createId: () => `id-${String((nextId += 1))}`,

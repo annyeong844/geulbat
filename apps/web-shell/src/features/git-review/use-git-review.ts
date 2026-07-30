@@ -124,7 +124,7 @@ export function useGitReview({
     [],
   );
 
-  const releaseFileObservation = useCallback(async () => {
+  const releaseFileObservation = useCallback(() => {
     fileAbortRef.current?.abort();
     fileAbortRef.current = null;
     const observationId = observationIdRef.current;
@@ -134,27 +134,35 @@ export function useGitReview({
       return;
     }
     try {
-      await client.release({
-        kind: 'file',
-        observationId,
-        fileObservationId,
-      });
+      void client
+        .release({
+          kind: 'file',
+          observationId,
+          fileObservationId,
+        })
+        .catch((error: unknown) => {
+          logger.warn('file observation release failed:', { error });
+        });
     } catch (error: unknown) {
       logger.warn('file observation release failed:', { error });
     }
   }, [client]);
 
-  const releaseAllObservations = useCallback(async () => {
+  const releaseAllObservations = useCallback(() => {
     summaryAbortRef.current?.abort();
     summaryAbortRef.current = null;
-    await releaseFileObservation();
+    releaseFileObservation();
     const observationId = observationIdRef.current;
     observationIdRef.current = null;
     if (observationId === null) {
       return;
     }
     try {
-      await client.release({ kind: 'summary', observationId });
+      void client
+        .release({ kind: 'summary', observationId })
+        .catch((error: unknown) => {
+          logger.warn('summary observation release failed:', { error });
+        });
     } catch (error: unknown) {
       logger.warn('summary observation release failed:', { error });
     }
@@ -188,7 +196,7 @@ export function useGitReview({
         ...INITIAL_STATE,
         summaryLoading: workingDirectory !== null,
       }));
-      await releaseAllObservations();
+      releaseAllObservations();
       if (
         generation !== summaryGenerationRef.current ||
         workingDirectory === null
@@ -269,7 +277,7 @@ export function useGitReview({
         fileLoadingMore: false,
         fileError: null,
       }));
-      await releaseFileObservation();
+      releaseFileObservation();
       if (
         summaryGeneration !== summaryGenerationRef.current ||
         generation !== fileGenerationRef.current ||
@@ -429,6 +437,14 @@ export function useGitReview({
       if (file === undefined) {
         return;
       }
+      if (
+        current.selectedFileId === fileId &&
+        current.fileIssue === null &&
+        current.fileError === null &&
+        (current.fileLoading || current.file?.fileId === fileId)
+      ) {
+        return;
+      }
       void captureFile(current.summary, fileId, true);
     },
     [captureFile],
@@ -551,12 +567,17 @@ export function useGitReview({
     if (previous === reviewOpen) {
       return;
     }
-    void refreshSummary({
-      explicit: reviewOpen,
-      preserveSelection: true,
-      captureSelected: reviewOpen,
-    });
-  }, [refreshSummary, reviewOpen]);
+    const current = stateRef.current;
+    if (
+      reviewOpen &&
+      current.summary?.kind === 'changed' &&
+      current.selectedFileId !== null &&
+      current.file?.fileId !== current.selectedFileId &&
+      !current.fileLoading
+    ) {
+      void captureFile(current.summary, current.selectedFileId, true);
+    }
+  }, [captureFile, reviewOpen]);
 
   const previousRefreshGenerationRef = useRef(refreshGeneration);
   useEffect(() => {
@@ -583,7 +604,7 @@ export function useGitReview({
     () => () => {
       summaryGenerationRef.current += 1;
       fileGenerationRef.current += 1;
-      void releaseAllObservations();
+      releaseAllObservations();
     },
     [releaseAllObservations],
   );

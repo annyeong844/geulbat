@@ -336,7 +336,7 @@ void test('executeRunRequest pins one observer-safe projection identity in the d
         kind: 'blocked',
         message: 'projection pin test stop',
       });
-      input.ports.settleTerminal({ result, source: 'blocked' });
+      await input.ports.settleTerminal({ result, source: 'blocked' });
       return result;
     },
   } satisfies AgentLoopImplementation;

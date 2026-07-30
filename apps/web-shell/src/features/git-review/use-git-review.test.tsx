@@ -345,7 +345,121 @@ void test('refresh preserves selection by ordered layer paths instead of display
   act(() => renderer.unmount());
 });
 
-void test('open, paging, selection, and close preserve immutable observations and release file before summary', async () => {
+void test('selecting the current file does not recapture or release it', async () => {
+  const calls: string[] = [];
+  const client: GitReviewClient = {
+    async fetchSummary() {
+      return changedSummary('observation-1', 'same');
+    },
+    async fetchFile(request) {
+      assert.equal(request.kind, 'start');
+      calls.push(`file:start:${request.fileId}`);
+      return readyFile(
+        request.observationId,
+        request.fileId,
+        `capture-${request.fileId}`,
+        request.fileId,
+        null,
+      );
+    },
+    async release(request) {
+      calls.push(releaseLabel(request));
+      return { kind: 'released' };
+    },
+  };
+  let current!: GitReviewController;
+  let renderer!: ReactTestRenderer;
+
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <Harness
+        workingDirectory="/repo"
+        reviewOpen
+        refreshGeneration={0}
+        client={client}
+        onRender={(controller) => {
+          current = controller;
+        }}
+      />,
+    );
+    await flushEffects();
+  });
+  const selectedFileId = current.selectedFileId;
+  assert.ok(selectedFileId);
+  const callsBeforeReselection = [...calls];
+
+  await act(async () => {
+    current.selectFile(selectedFileId);
+    await flushEffects();
+  });
+  assert.deepEqual(calls, callsBeforeReselection);
+  act(() => renderer.unmount());
+});
+
+void test('a lost file release response does not delay the next selection', async () => {
+  const releaseGate = deferred<{ kind: 'released' }>();
+  const calls: string[] = [];
+  const client: GitReviewClient = {
+    async fetchSummary() {
+      return changedSummary('observation-1', 'release');
+    },
+    async fetchFile(request) {
+      assert.equal(request.kind, 'start');
+      calls.push(`file:start:${request.fileId}`);
+      return readyFile(
+        request.observationId,
+        request.fileId,
+        `capture-${request.fileId}`,
+        request.fileId,
+        null,
+      );
+    },
+    async release(request) {
+      calls.push(releaseLabel(request));
+      return request.kind === 'file'
+        ? releaseGate.promise
+        : { kind: 'released' };
+    },
+  };
+  let current!: GitReviewController;
+  let renderer!: ReactTestRenderer;
+
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <Harness
+        workingDirectory="/repo"
+        reviewOpen
+        refreshGeneration={0}
+        client={client}
+        onRender={(controller) => {
+          current = controller;
+        }}
+      />,
+    );
+    await flushEffects();
+  });
+  const secondFile = current.changedSummary?.files.items[1];
+  assert.ok(secondFile);
+
+  await act(async () => {
+    current.selectFile(secondFile.fileId);
+    await flushEffects();
+  });
+  assert.equal(
+    calls.includes(`file:start:${secondFile.fileId}`),
+    true,
+    'the next capture should start while the best-effort release is pending',
+  );
+  assert.equal(current.file?.fileId, secondFile.fileId);
+
+  await act(async () => {
+    releaseGate.resolve({ kind: 'released' });
+    await flushEffects();
+    renderer.unmount();
+  });
+});
+
+void test('open and close reuse the captured observation while paging and selection stay immutable', async () => {
   const calls: string[] = [];
   let summaryStartCount = 0;
   const client: GitReviewClient = {
@@ -356,7 +470,7 @@ void test('open, paging, selection, and close preserve immutable observations an
           ...changedSummary(request.observationId, 'continued'),
           files: {
             items: [
-              fileSummary('file-1-2', 'src/first.ts'),
+              fileSummary(`file-1-${summaryStartCount}`, 'src/first.ts'),
               fileSummary('file-3-page', 'src/third.ts'),
             ],
             nextCursor: null,
@@ -431,14 +545,12 @@ void test('open, paging, selection, and close preserve immutable observations an
     );
     await flushEffects();
   });
-  assert.equal(current.changedSummary?.observationId, 'observation-2');
+  assert.equal(current.changedSummary?.observationId, 'observation-1');
   assert.equal(current.selectedFile?.displayPath, 'src/first.ts');
   assert.equal(current.file?.rows.items[0]?.content, 'first row');
-  assert.deepEqual(calls.slice(1, 4), [
-    'release:summary:observation-1',
-    'summary:start:observation-2',
-    `file:start:${current.selectedFileId}`,
-  ]);
+  const firstFileId = current.selectedFileId;
+  assert.ok(firstFileId);
+  assert.deepEqual(calls.slice(1), [`file:start:${current.selectedFileId}`]);
 
   await act(async () => {
     current.loadMoreSummary();
@@ -464,9 +576,9 @@ void test('open, paging, selection, and close preserve immutable observations an
     calls.filter((call) => call.startsWith('release:summary:')).length,
     summaryReleaseCountBeforeSelection,
   );
-  assert.match(
+  assert.equal(
     calls.find((call) => call.startsWith('release:file:')) ?? '',
-    /capture-file-1-2/,
+    `release:file:observation-1:capture-${firstFileId}`,
   );
 
   await act(async () => {
@@ -493,13 +605,31 @@ void test('open, paging, selection, and close preserve immutable observations an
     );
     await flushEffects();
   });
-  assert.deepEqual(calls.slice(beforeClose, beforeClose + 3), [
-    `release:file:observation-2:capture-${secondFile.fileId}`,
-    'release:summary:observation-2',
-    'summary:start:observation-3',
-  ]);
-  assert.equal(current.changedSummary?.observationId, 'observation-3');
+  assert.deepEqual(calls.slice(beforeClose), []);
+  assert.equal(current.changedSummary?.observationId, 'observation-1');
+
+  await act(async () => {
+    renderer.update(
+      <Harness
+        workingDirectory="/repo"
+        reviewOpen
+        refreshGeneration={0}
+        client={client}
+        onRender={(controller) => {
+          current = controller;
+        }}
+      />,
+    );
+    await flushEffects();
+  });
+  assert.deepEqual(calls.slice(beforeClose), []);
+  assert.equal(current.file?.fileId, secondFile.fileId);
+
   act(() => renderer.unmount());
+  assert.deepEqual(calls.slice(beforeClose), [
+    `release:file:observation-1:capture-${secondFile.fileId}`,
+    'release:summary:observation-1',
+  ]);
 });
 
 function Harness(props: {

@@ -124,17 +124,13 @@ export async function captureGitWorktreeComparisonEntries(args: {
     maxOutputBytesPerStream: args.maxOutputBytesPerStream,
     ...(args.signal === undefined ? {} : { signal: args.signal }),
   };
-  const inventoryBefore = await readGitWorktreeInventory(
-    context,
-    args.snapshot.repositoryRoot,
-  );
+  const [inventoryBefore, configBefore] = await Promise.all([
+    readGitWorktreeInventory(context, args.snapshot.repositoryRoot),
+    readGitCanonicalizationConfig(context, args.snapshot.repositoryRoot),
+  ]);
   if (!inventoryBefore.ok) {
     return inventoryBefore;
   }
-  const configBefore = await readGitCanonicalizationConfig(
-    context,
-    args.snapshot.repositoryRoot,
-  );
   if (!configBefore.ok) {
     return configBefore;
   }
@@ -277,17 +273,13 @@ export async function captureGitWorktreeComparisonEntries(args: {
     entry.exactRenameIdentityVerified = blob.content.equals(canonicalContent);
   }
 
-  const inventoryAfter = await readGitWorktreeInventory(
-    context,
-    args.snapshot.repositoryRoot,
-  );
+  const [inventoryAfter, configAfter] = await Promise.all([
+    readGitWorktreeInventory(context, args.snapshot.repositoryRoot),
+    readGitCanonicalizationConfig(context, args.snapshot.repositoryRoot),
+  ]);
   if (!inventoryAfter.ok) {
     return inventoryAfter;
   }
-  const configAfter = await readGitCanonicalizationConfig(
-    context,
-    args.snapshot.repositoryRoot,
-  );
   if (!configAfter.ok) {
     return configAfter;
   }
@@ -365,6 +357,7 @@ async function readGitWorktreeInventory(
       'ls-files',
       '--cached',
       '--others',
+      '--deduplicate',
       '--exclude-standard',
       '--full-name',
       '-z',
@@ -414,11 +407,10 @@ async function readGitCanonicalizationConfig(
 ): Promise<
   { ok: true; config: GitCanonicalizationConfig } | GitInspectionReadFailure
 > {
-  const autoCrlf = await readGitConfigValue(
-    context,
-    repositoryRoot,
-    'core.autocrlf',
-  );
+  const [autoCrlf, fileMode] = await Promise.all([
+    readGitConfigValue(context, repositoryRoot, 'core.autocrlf'),
+    readGitConfigValue(context, repositoryRoot, 'core.filemode'),
+  ]);
   if (!autoCrlf.ok) {
     return autoCrlf;
   }
@@ -433,11 +425,6 @@ async function readGitCanonicalizationConfig(
       'Git returned an invalid core.autocrlf value.',
     );
   }
-  const fileMode = await readGitConfigValue(
-    context,
-    repositoryRoot,
-    'core.filemode',
-  );
   if (!fileMode.ok) {
     return fileMode;
   }

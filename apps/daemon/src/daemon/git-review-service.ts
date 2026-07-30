@@ -8,10 +8,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
 import type { HostCommandRuntime } from '../command-host/contract.js';
-import {
-  readGitBlobObject,
-  sameGitObjectIndexSnapshot,
-} from './git-inspection-command.js';
+import { readGitBlobObject } from './git-inspection-command.js';
 import type {
   GitLogicalEntry,
   GitLogicalLayerEntry,
@@ -41,6 +38,7 @@ interface StoredGitReviewSummary {
   observation: GitReviewObservationSnapshot;
   observedAt: string;
   files: readonly StoredGitReviewFile[];
+  blobCache: Map<string, Buffer>;
   totals: {
     fileCount: number;
     additions: number | null;
@@ -368,6 +366,7 @@ export function createGitReviewObservationService(args: {
       ) {
         return { kind: 'unavailable', reason: 'resource_limit' };
       }
+      const blobCache = new Map<string, Buffer>();
       const totals = await calculateGitReviewTotals({
         hostCommands: args.hostCommands,
         stateRoot: args.stateRoot,
@@ -375,6 +374,7 @@ export function createGitReviewObservationService(args: {
         maxOutputBytesPerStream: args.maxOutputBytesPerStream,
         observation: captured.observation,
         files,
+        blobCache,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
       if (!totals.ok) {
@@ -385,8 +385,10 @@ export function createGitReviewObservationService(args: {
         observation: captured.observation,
         observedAt,
         files,
+        blobCache,
         totals: totals.value,
       };
+      options.signal?.throwIfAborted();
       summaries.set(observationId, stored);
       return projectChangedSummaryPage({
         stored,
@@ -442,52 +444,16 @@ export function createGitReviewObservationService(args: {
       if (storedFile === undefined) {
         return { kind: 'stale', reason: 'entry_missing' };
       }
-      const recaptured = await captureGitReviewObservation({
-        hostCommands: args.hostCommands,
-        stateRoot: args.stateRoot,
-        workingDirectory:
-          storedSummary.observation.objectIndexSnapshot.repositoryRoot,
-        pageLimitBytes: args.pageLimitBytes,
-        maxOutputBytesPerStream: args.maxOutputBytesPerStream,
-        maxFileBytes: args.maxFileBytes,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      });
-      if (!recaptured.ok) {
-        return projectGitReviewFileCaptureFailure(recaptured);
-      }
-      if (
-        !sameGitObjectIndexSnapshot(
-          storedSummary.observation.objectIndexSnapshot,
-          recaptured.observation.objectIndexSnapshot,
-        )
-      ) {
-        return { kind: 'stale', reason: 'observation_changed' };
-      }
-      const matchingEntries = recaptured.observation.logicalEntries.filter(
-        ({ structuralIdentity }) =>
-          structuralIdentity === storedFile.logicalEntry.structuralIdentity,
-      );
-      const [recapturedEntry] = matchingEntries;
-      if (matchingEntries.length !== 1 || recapturedEntry === undefined) {
-        return {
-          kind: 'stale',
-          reason:
-            storedFile.logicalEntry.exactRenameProofs.length > 0
-              ? 'observation_changed'
-              : 'entry_missing',
-        };
-      }
-      if (!sameGitExactRenameProofs(storedFile.logicalEntry, recapturedEntry)) {
-        return { kind: 'stale', reason: 'observation_changed' };
-      }
+      options.signal?.throwIfAborted();
       const projected = await buildGitReviewFileProjection({
         hostCommands: args.hostCommands,
         stateRoot: args.stateRoot,
         pageLimitBytes: args.pageLimitBytes,
         maxOutputBytesPerStream: args.maxOutputBytesPerStream,
-        observation: recaptured.observation,
-        logicalEntry: recapturedEntry,
+        observation: storedSummary.observation,
+        logicalEntry: storedFile.logicalEntry,
         summary: storedFile.summary,
+        blobCache: storedSummary.blobCache,
         createId,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
@@ -515,6 +481,7 @@ export function createGitReviewObservationService(args: {
         rows: projected.rows,
         capturedAt: now().toISOString(),
       };
+      options.signal?.throwIfAborted();
       fileObservations.set(fileObservationId, storedFileObservation);
       return projectReadyFilePage({
         stored: storedFileObservation,
@@ -550,6 +517,7 @@ async function calculateGitReviewTotals(args: {
   maxOutputBytesPerStream: number;
   observation: GitReviewObservationSnapshot;
   files: readonly StoredGitReviewFile[];
+  blobCache: Map<string, Buffer>;
   signal?: AbortSignal;
 }): Promise<
   | {
@@ -603,6 +571,7 @@ async function calculateGitReviewTotals(args: {
       layer,
       worktreeContents,
       blobReads,
+      blobCache: args.blobCache,
       hostCommands: args.hostCommands,
       stateRoot: args.stateRoot,
       repositoryRoot: args.observation.objectIndexSnapshot.repositoryRoot,
@@ -621,6 +590,7 @@ async function calculateGitReviewTotals(args: {
       layer,
       worktreeContents,
       blobReads,
+      blobCache: args.blobCache,
       hostCommands: args.hostCommands,
       stateRoot: args.stateRoot,
       repositoryRoot: args.observation.objectIndexSnapshot.repositoryRoot,
@@ -639,16 +609,13 @@ async function calculateGitReviewTotals(args: {
     if (beforeText === undefined || afterText === undefined) {
       return { ok: true, value: incomplete };
     }
-    for (const operation of buildMyersLineOperations(
-      beforeText.lines,
-      afterText.lines,
-    )) {
-      if (operation.kind === 'addition') {
-        additions += 1;
-      } else if (operation.kind === 'deletion') {
-        deletions += 1;
-      }
-    }
+    const changes = countGitReviewLineChanges(
+      beforeText,
+      afterText,
+      args.signal,
+    );
+    additions += changes.additions;
+    deletions += changes.deletions;
   }
   return {
     ok: true,
@@ -681,6 +648,7 @@ async function buildGitReviewFileProjection(args: {
   observation: GitReviewObservationSnapshot;
   logicalEntry: GitLogicalEntry;
   summary: GitReviewSummaryServiceFile;
+  blobCache: Map<string, Buffer>;
   createId: () => string;
   signal?: AbortSignal;
 }): Promise<
@@ -798,6 +766,7 @@ async function buildGitReviewFileProjection(args: {
       layer,
       worktreeContents,
       blobReads,
+      blobCache: args.blobCache,
       hostCommands: args.hostCommands,
       stateRoot: args.stateRoot,
       repositoryRoot: args.observation.objectIndexSnapshot.repositoryRoot,
@@ -813,6 +782,7 @@ async function buildGitReviewFileProjection(args: {
       layer,
       worktreeContents,
       blobReads,
+      blobCache: args.blobCache,
       hostCommands: args.hostCommands,
       stateRoot: args.stateRoot,
       repositoryRoot: args.observation.objectIndexSnapshot.repositoryRoot,
@@ -854,6 +824,7 @@ async function buildGitReviewFileProjection(args: {
         sectionId,
         before: beforeText,
         after: afterText,
+        ...(args.signal === undefined ? {} : { signal: args.signal }),
       }),
     );
   }
@@ -865,6 +836,7 @@ async function readGitReviewLayerSide(args: {
   layer: Exclude<GitLogicalLayerEntry, { comparison: 'conflict' }>;
   worktreeContents: ReadonlyMap<string, GitWorktreeContentSnapshot>;
   blobReads: Map<string, Promise<Buffer | GitReviewFileServiceResult>>;
+  blobCache: Map<string, Buffer>;
   hostCommands: HostCommandRuntime;
   stateRoot: string;
   repositoryRoot: string;
@@ -905,6 +877,10 @@ async function readGitReviewLayerSide(args: {
       result: { kind: 'unavailable', reason: 'comparison_unsupported' },
     };
   }
+  const cached = args.blobCache.get(objectId);
+  if (cached !== undefined) {
+    return { ok: true, content: cached };
+  }
   let read = args.blobReads.get(objectId);
   if (read === undefined) {
     read = readGitReviewBlob({
@@ -919,9 +895,11 @@ async function readGitReviewLayerSide(args: {
     args.blobReads.set(objectId, read);
   }
   const content = await read;
-  return Buffer.isBuffer(content)
-    ? { ok: true, content }
-    : { ok: false, result: content };
+  if (!Buffer.isBuffer(content)) {
+    return { ok: false, result: content };
+  }
+  args.blobCache.set(objectId, content);
+  return { ok: true, content };
 }
 
 function gitReviewProjectionBlockReason(args: {
@@ -1062,10 +1040,12 @@ export function buildGitReviewDiffRows(args: {
   sectionId: string;
   before: GitReviewText;
   after: GitReviewText;
+  signal?: AbortSignal;
 }): readonly GitReviewFileServiceRow[] {
   const operations = buildMyersLineOperations(
-    args.before.lines,
-    args.after.lines,
+    args.before,
+    args.after,
+    args.signal,
   );
   const changeIndexes = operations.flatMap((operation, index) =>
     operation.kind === 'context' ? [] : [index],
@@ -1075,6 +1055,7 @@ export function buildGitReviewDiffRows(args: {
   }
   const ranges: { start: number; end: number }[] = [];
   for (const changeIndex of changeIndexes) {
+    args.signal?.throwIfAborted();
     const start = Math.max(0, changeIndex - UNIFIED_DIFF_CONTEXT_LINES);
     const end = Math.min(
       operations.length,
@@ -1092,6 +1073,7 @@ export function buildGitReviewDiffRows(args: {
   const newLineBefore = prefixLineCounts(operations, 'new');
   const rows: GitReviewFileServiceRow[] = [];
   for (const range of ranges) {
+    args.signal?.throwIfAborted();
     const oldStart = oldLineBefore[range.start] ?? 0;
     const newStart = newLineBefore[range.start] ?? 0;
     const oldCount = (oldLineBefore[range.end] ?? oldStart) - oldStart;
@@ -1108,7 +1090,16 @@ export function buildGitReviewDiffRows(args: {
     });
     let oldLine = oldStart + 1;
     let newLine = newStart + 1;
-    for (const operation of operations.slice(range.start, range.end)) {
+    for (
+      let operationIndex = range.start;
+      operationIndex < range.end;
+      operationIndex += 1
+    ) {
+      args.signal?.throwIfAborted();
+      const operation = operations[operationIndex];
+      if (operation === undefined) {
+        throw new Error('Git review diff lost a projected operation');
+      }
       if (operation.kind === 'context') {
         rows.push({
           sectionId: args.sectionId,
@@ -1117,6 +1108,20 @@ export function buildGitReviewDiffRows(args: {
           newLine,
           content: operation.content,
         });
+        if (
+          oldLine === args.before.lines.length &&
+          newLine === args.after.lines.length &&
+          !args.before.endsWithNewline &&
+          !args.after.endsWithNewline
+        ) {
+          rows.push({
+            sectionId: args.sectionId,
+            kind: 'metadata',
+            oldLine: null,
+            newLine: null,
+            content: '\\ No newline at end of file',
+          });
+        }
         oldLine += 1;
         newLine += 1;
       } else if (operation.kind === 'deletion') {
@@ -1127,6 +1132,18 @@ export function buildGitReviewDiffRows(args: {
           newLine: null,
           content: operation.content,
         });
+        if (
+          oldLine === args.before.lines.length &&
+          !args.before.endsWithNewline
+        ) {
+          rows.push({
+            sectionId: args.sectionId,
+            kind: 'metadata',
+            oldLine: null,
+            newLine: null,
+            content: '\\ No newline at end of before file',
+          });
+        }
         oldLine += 1;
       } else {
         rows.push({
@@ -1136,39 +1153,35 @@ export function buildGitReviewDiffRows(args: {
           newLine,
           content: operation.content,
         });
+        if (
+          newLine === args.after.lines.length &&
+          !args.after.endsWithNewline
+        ) {
+          rows.push({
+            sectionId: args.sectionId,
+            kind: 'metadata',
+            oldLine: null,
+            newLine: null,
+            content: '\\ No newline at end of after file',
+          });
+        }
         newLine += 1;
       }
     }
-  }
-  if (!args.before.endsWithNewline && args.before.lines.length > 0) {
-    rows.push({
-      sectionId: args.sectionId,
-      kind: 'metadata',
-      oldLine: null,
-      newLine: null,
-      content: '\\ No newline at end of before file',
-    });
-  }
-  if (!args.after.endsWithNewline && args.after.lines.length > 0) {
-    rows.push({
-      sectionId: args.sectionId,
-      kind: 'metadata',
-      oldLine: null,
-      newLine: null,
-      content: '\\ No newline at end of after file',
-    });
   }
   return rows;
 }
 
 function buildMyersLineOperations(
-  before: readonly string[],
-  after: readonly string[],
+  before: GitReviewText,
+  after: GitReviewText,
+  signal?: AbortSignal,
 ): GitReviewLineOperation[] {
-  const maximumDistance = before.length + after.length;
+  const maximumDistance = before.lines.length + after.lines.length;
   const frontier = new Map<number, number>([[1, 0]]);
   const trace: Map<number, number>[] = [];
   for (let distance = 0; distance <= maximumDistance; distance += 1) {
+    signal?.throwIfAborted();
     trace.push(new Map(frontier));
     for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
       const movesDown =
@@ -1180,17 +1193,78 @@ function buildMyersLineOperations(
         ? (frontier.get(diagonal + 1) ?? 0)
         : (frontier.get(diagonal - 1) ?? 0) + 1;
       let y = x - diagonal;
-      while (x < before.length && y < after.length && before[x] === after[y]) {
+      while (
+        x < before.lines.length &&
+        y < after.lines.length &&
+        sameGitReviewLine(before, after, x, y)
+      ) {
         x += 1;
         y += 1;
       }
       frontier.set(diagonal, x);
-      if (x >= before.length && y >= after.length) {
-        return backtrackMyersLineOperations(before, after, trace);
+      if (x >= before.lines.length && y >= after.lines.length) {
+        return backtrackMyersLineOperations(before.lines, after.lines, trace);
       }
     }
   }
   throw new Error('Myers line diff did not reach a terminal path');
+}
+
+function countGitReviewLineChanges(
+  before: GitReviewText,
+  after: GitReviewText,
+  signal?: AbortSignal,
+): { additions: number; deletions: number } {
+  const maximumDistance = before.lines.length + after.lines.length;
+  const frontier = new Map<number, number>([[1, 0]]);
+  for (let distance = 0; distance <= maximumDistance; distance += 1) {
+    signal?.throwIfAborted();
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const movesDown =
+        diagonal === -distance ||
+        (diagonal !== distance &&
+          (frontier.get(diagonal - 1) ?? Number.NEGATIVE_INFINITY) <
+            (frontier.get(diagonal + 1) ?? Number.NEGATIVE_INFINITY));
+      let x = movesDown
+        ? (frontier.get(diagonal + 1) ?? 0)
+        : (frontier.get(diagonal - 1) ?? 0) + 1;
+      let y = x - diagonal;
+      while (
+        x < before.lines.length &&
+        y < after.lines.length &&
+        sameGitReviewLine(before, after, x, y)
+      ) {
+        x += 1;
+        y += 1;
+      }
+      frontier.set(diagonal, x);
+      if (x >= before.lines.length && y >= after.lines.length) {
+        const deletions =
+          (distance + before.lines.length - after.lines.length) / 2;
+        return {
+          additions: distance - deletions,
+          deletions,
+        };
+      }
+    }
+  }
+  throw new Error('Myers line count did not reach a terminal path');
+}
+
+function sameGitReviewLine(
+  before: GitReviewText,
+  after: GitReviewText,
+  beforeIndex: number,
+  afterIndex: number,
+): boolean {
+  if (before.lines[beforeIndex] !== after.lines[afterIndex]) {
+    return false;
+  }
+  const beforeMissingFinalNewline =
+    beforeIndex === before.lines.length - 1 && !before.endsWithNewline;
+  const afterMissingFinalNewline =
+    afterIndex === after.lines.length - 1 && !after.endsWithNewline;
+  return beforeMissingFinalNewline === afterMissingFinalNewline;
 }
 
 function backtrackMyersLineOperations(
@@ -1561,29 +1635,6 @@ function pageGitReviewRows(
   };
 }
 
-function sameGitExactRenameProofs(
-  left: GitLogicalEntry,
-  right: GitLogicalEntry,
-): boolean {
-  return (
-    left.exactRenameProofs.length === right.exactRenameProofs.length &&
-    left.exactRenameProofs.every((proof, index) => {
-      const peer = right.exactRenameProofs[index];
-      return (
-        peer !== undefined &&
-        proof.comparison === peer.comparison &&
-        proof.verification === peer.verification &&
-        proof.beforePath.equals(peer.beforePath) &&
-        proof.afterPath.equals(peer.afterPath) &&
-        proof.beforeMode === peer.beforeMode &&
-        proof.afterMode === peer.afterMode &&
-        proof.beforeObjectId === peer.beforeObjectId &&
-        proof.afterObjectId === peer.afterObjectId
-      );
-    })
-  );
-}
-
 function encodeFileCursor(key: Buffer, payload: FileCursorPayload): string {
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
     'base64url',
@@ -1772,33 +1823,6 @@ function projectGitReviewCaptureFailure(
       return { kind: 'stale', reason: 'observation_changed' };
     case 'resource_limit':
       return { kind: 'unavailable', reason: 'resource_limit' };
-    case 'aborted':
-    case 'command_failed':
-    case 'invalid_object_id':
-    case 'invalid_output':
-    case 'object_unavailable':
-      throw new Error(failure.message);
-  }
-}
-
-function projectGitReviewFileCaptureFailure(
-  failure: Exclude<
-    Awaited<ReturnType<typeof captureGitReviewObservation>>,
-    { ok: true }
-  >,
-): GitReviewFileServiceResult {
-  switch (failure.reason) {
-    case 'observation_changed':
-      return { kind: 'stale', reason: 'observation_changed' };
-    case 'resource_limit':
-      return { kind: 'unavailable', reason: 'resource_limit' };
-    case 'filtered_worktree_comparison_unsupported':
-    case 'safe_worktree_read_unavailable':
-    case 'unsupported_worktree_transformation':
-      return { kind: 'unavailable', reason: 'comparison_unsupported' };
-    case 'not_repository':
-    case 'bare_repository':
-      return { kind: 'stale', reason: 'observation_changed' };
     case 'aborted':
     case 'command_failed':
     case 'invalid_object_id':

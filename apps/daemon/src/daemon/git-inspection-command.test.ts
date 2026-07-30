@@ -513,6 +513,111 @@ void test('object/index capture preserves detached branch identity', async (t) =
 });
 
 void linuxTest(
+  'object and index capture classifies malformed Git command results',
+  async (t) => {
+    const fixture = await createGitInspectionFixture(t);
+    await writeFile(join(fixture.repositoryRoot, 'tracked.txt'), 'base\n');
+    await runGit(fixture.repositoryRoot, ['add', 'tracked.txt']);
+    await runGit(fixture.repositoryRoot, ['commit', '-qm', 'base']);
+
+    const scenarios = [
+      invalidGitOutputScenario(
+        'bare classification',
+        matchesLastGitArgument('--is-bare-repository'),
+        'neither\n',
+        'Git returned an invalid bare-repository classification.',
+      ),
+      gitCommandFailureScenario(
+        'worktree root command',
+        matchesLastGitArgument('--show-toplevel'),
+        'Git could not resolve the repository worktree root.',
+        'not_repository',
+      ),
+      invalidGitOutputScenario(
+        'worktree root output',
+        matchesLastGitArgument('--show-toplevel'),
+        '',
+        'Git returned an invalid repository worktree root.',
+      ),
+      invalidGitOutputScenario(
+        'object format',
+        matchesLastGitArgument('--show-object-format'),
+        'sha512\n',
+        'Git returned an unsupported repository object format.',
+      ),
+      gitCommandFailureScenario(
+        'HEAD command',
+        matchesLastGitArgument('HEAD^{commit}'),
+        'Git could not resolve HEAD.',
+      ),
+      invalidGitOutputScenario(
+        'HEAD output',
+        matchesLastGitArgument('HEAD^{commit}'),
+        'not-an-object-id\n',
+        'Git returned an invalid HEAD object id.',
+      ),
+      gitCommandFailureScenario(
+        'branch command',
+        includesGitArgument('symbolic-ref'),
+        'Git could not resolve the current branch.',
+      ),
+      invalidGitOutputScenario(
+        'branch output',
+        includesGitArgument('symbolic-ref'),
+        '\n',
+        'Git returned an invalid current branch.',
+      ),
+      gitCommandFailureScenario(
+        'HEAD tree command',
+        includesGitArgument('ls-tree'),
+        'Git could not read the captured HEAD tree.',
+      ),
+      invalidGitOutputScenario(
+        'HEAD tree output',
+        includesGitArgument('ls-tree'),
+        'invalid-tree-record\\0',
+        'Git returned an invalid HEAD tree inventory.',
+      ),
+      gitCommandFailureScenario(
+        'index command',
+        includesGitArgument('--stage'),
+        'Git could not read the captured index.',
+      ),
+      invalidGitOutputScenario(
+        'index output',
+        includesGitArgument('--stage'),
+        'invalid-index-record\\0',
+        'Git returned an invalid index inventory.',
+      ),
+      invalidGitOutputScenario(
+        'index path output',
+        includesGitArgument('--git-path'),
+        'relative-index\n',
+        'Git returned an invalid index path.',
+      ),
+      invalidGitOutputScenario(
+        'index path is a directory',
+        includesGitArgument('--git-path'),
+        `${fixture.repositoryRoot.replaceAll('%', '%%')}\n`,
+        'Git index path is not a regular file.',
+      ),
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const captured = await captureGitObjectIndexSnapshot({
+        hostCommands: replaceGitInspectionCommand(fixture, scenario),
+        stateRoot: fixture.stateRoot,
+        workingDirectory: fixture.repositoryRoot,
+        pageLimitBytes: 64,
+        maxOutputBytesPerStream: 1024 * 1024,
+      });
+
+      assert.deepEqual(captured, scenario.expected, scenario.name);
+    }
+  },
+);
+
+void linuxTest(
   'worktree comparison resolves Git attributes for raw paths and hashes canonical regular and symlink content',
   async (t) => {
     const fixture = await createGitInspectionFixture(t);
@@ -641,6 +746,179 @@ void linuxTest(
           path: Buffer.from('untracked-link').toString('base64'),
         },
       ],
+    );
+  },
+);
+
+void linuxTest(
+  'worktree comparison classifies malformed inventory, config, and attribute commands',
+  async (t) => {
+    const fixture = await createGitInspectionFixture(t);
+    await writeFile(join(fixture.repositoryRoot, 'tracked.txt'), 'base\n');
+    await runGit(fixture.repositoryRoot, ['add', 'tracked.txt']);
+    await runGit(fixture.repositoryRoot, ['commit', '-qm', 'base']);
+    await writeFile(join(fixture.repositoryRoot, 'untracked.txt'), 'new\n');
+    const objectIndex = await captureSnapshot(fixture);
+    assert.equal(objectIndex.ok, true);
+    if (!objectIndex.ok) {
+      return;
+    }
+
+    const scenarios = [
+      gitCommandFailureScenario(
+        'inventory command',
+        includesGitArgument('--others'),
+        'Git could not read the worktree inventory.',
+      ),
+      invalidGitOutputScenario(
+        'inventory output',
+        includesGitArgument('--others'),
+        'missing-nul',
+        'Git returned an invalid worktree inventory.',
+      ),
+      invalidGitOutputScenario(
+        'duplicate inventory path',
+        includesGitArgument('--others'),
+        'tracked.txt\\0tracked.txt\\0',
+        'Git returned an invalid or duplicate worktree path.',
+      ),
+      gitCommandFailureScenario(
+        'config command',
+        matchesLastGitArgument('core.autocrlf'),
+        'Git could not read core.autocrlf.',
+      ),
+      invalidGitOutputScenario(
+        'core.autocrlf output',
+        matchesLastGitArgument('core.autocrlf'),
+        'true\nfalse\n',
+        'Git returned an invalid core.autocrlf value.',
+      ),
+      invalidGitOutputScenario(
+        'core.filemode output',
+        matchesLastGitArgument('core.filemode'),
+        'invalid-test-value\n',
+        'Git returned an invalid core.filemode value.',
+      ),
+      gitCommandFailureScenario(
+        'attribute command',
+        includesGitArgument('check-attr'),
+        'Git could not resolve worktree canonicalization attributes.',
+      ),
+      invalidGitOutputScenario(
+        'attribute output',
+        includesGitArgument('check-attr'),
+        'invalid-attribute-output',
+        'Git returned invalid worktree canonicalization attributes.',
+      ),
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const captured = await captureGitWorktreeComparisonEntries({
+        hostCommands: replaceGitInspectionCommand(fixture, scenario),
+        stateRoot: fixture.stateRoot,
+        snapshot: objectIndex.snapshot,
+        pageLimitBytes: 64,
+        maxOutputBytesPerStream: 1024 * 1024,
+        maxFileBytes: 1024 * 1024,
+      });
+
+      assert.deepEqual(captured, scenario.expected, scenario.name);
+    }
+  },
+);
+
+void linuxTest(
+  'worktree comparison captures gitlinks, special entries, nested files, and auto text with index CRLF',
+  async (t) => {
+    const fixture = await createGitInspectionFixture(t);
+    await writeFile(
+      join(fixture.repositoryRoot, '.gitattributes'),
+      'preserved.txt -text\n',
+    );
+    await writeFile(
+      join(fixture.repositoryRoot, 'preserved.txt'),
+      'kept\r\nas-crlf\r\n',
+    );
+    await writeFile(
+      join(fixture.repositoryRoot, 'diagnostic.pipe'),
+      'regular placeholder\n',
+    );
+    await runGit(fixture.repositoryRoot, ['add', '-A']);
+    await runGit(fixture.repositoryRoot, ['commit', '-qm', 'base']);
+
+    const headObjectId = await runGitOutput(fixture.repositoryRoot, [
+      'rev-parse',
+      'HEAD',
+    ]);
+    await runGit(fixture.repositoryRoot, [
+      'update-index',
+      '--add',
+      '--cacheinfo',
+      `160000,${headObjectId},vendor`,
+    ]);
+    await mkdir(join(fixture.repositoryRoot, 'vendor'));
+    await rm(join(fixture.repositoryRoot, 'diagnostic.pipe'));
+    await execFileAsync('mkfifo', [
+      join(fixture.repositoryRoot, 'diagnostic.pipe'),
+    ]);
+    await mkdir(join(fixture.repositoryRoot, 'nested'));
+    await writeFile(
+      join(fixture.repositoryRoot, 'nested', 'untracked.txt'),
+      'nested\n',
+    );
+    await writeFile(
+      join(fixture.repositoryRoot, '.gitattributes'),
+      'preserved.txt text=auto\n',
+    );
+    await writeFile(
+      join(fixture.repositoryRoot, 'preserved.txt'),
+      'kept\r\nas-crlf\r\n',
+    );
+    await runGit(fixture.repositoryRoot, ['config', 'core.filemode', 'false']);
+    await chmod(join(fixture.repositoryRoot, 'preserved.txt'), 0o755);
+
+    const objectIndex = await captureSnapshot(fixture);
+    assert.equal(objectIndex.ok, true);
+    if (!objectIndex.ok) {
+      return;
+    }
+    const captured = await captureGitWorktreeComparisonEntries({
+      hostCommands: fixture.host,
+      stateRoot: fixture.stateRoot,
+      snapshot: objectIndex.snapshot,
+      pageLimitBytes: 64,
+      maxOutputBytesPerStream: 1024 * 1024,
+      maxFileBytes: 1024 * 1024,
+    });
+
+    assert.equal(captured.ok, true);
+    if (!captured.ok) {
+      return;
+    }
+    const entries = new Map(
+      captured.entries.map((entry) => [entry.path.toString('utf8'), entry]),
+    );
+    assert.deepEqual(entries.get('vendor'), {
+      path: Buffer.from('vendor'),
+      mode: '160000',
+      objectId: null,
+      contentKind: 'submodule',
+      exactRenameIdentityVerified: false,
+    });
+    assert.deepEqual(entries.get('diagnostic.pipe'), {
+      path: Buffer.from('diagnostic.pipe'),
+      mode: 'special',
+      objectId: null,
+      contentKind: 'special',
+      exactRenameIdentityVerified: false,
+    });
+    assert.equal(entries.get('nested/untracked.txt')?.contentKind, 'text');
+    assert.equal(entries.get('preserved.txt')?.mode, '100644');
+    assert.deepEqual(
+      captured.contents.find((entry) =>
+        entry.path.equals(Buffer.from('preserved.txt')),
+      )?.canonicalContent,
+      Buffer.from('kept\r\nas-crlf\r\n'),
     );
   },
 );
@@ -1955,6 +2233,82 @@ async function createGitInspectionFixture(
     'geulbat@example.invalid',
   ]);
   return { host, repositoryRoot, stateRoot };
+}
+
+interface GitInspectionCommandScenario {
+  name: string;
+  matches: (args: readonly string[]) => boolean;
+  executable: string;
+  replacementArgs: readonly string[];
+  expected: {
+    ok: false;
+    reason: 'command_failed' | 'invalid_output' | 'not_repository';
+    message: string;
+  };
+}
+
+function gitCommandFailureScenario(
+  name: string,
+  matches: GitInspectionCommandScenario['matches'],
+  message: string,
+  reason: 'command_failed' | 'not_repository' = 'command_failed',
+): GitInspectionCommandScenario {
+  return {
+    name,
+    matches,
+    executable: '/bin/sh',
+    replacementArgs: ['-c', 'exit 2'],
+    expected: { ok: false, reason, message },
+  };
+}
+
+function invalidGitOutputScenario(
+  name: string,
+  matches: GitInspectionCommandScenario['matches'],
+  output: string,
+  message: string,
+): GitInspectionCommandScenario {
+  return {
+    name,
+    matches,
+    executable: '/usr/bin/printf',
+    replacementArgs: [output],
+    expected: { ok: false, reason: 'invalid_output', message },
+  };
+}
+
+function matchesLastGitArgument(expected: string) {
+  return (args: readonly string[]) => args.at(-1) === expected;
+}
+
+function includesGitArgument(expected: string) {
+  return (args: readonly string[]) => args.includes(expected);
+}
+
+function replaceGitInspectionCommand(
+  fixture: GitInspectionFixture,
+  replacement: Pick<
+    GitInspectionCommandScenario,
+    'matches' | 'executable' | 'replacementArgs'
+  >,
+): HostCommandRuntime {
+  return {
+    async start(args) {
+      return await fixture.host.start(
+        args.executable === 'git' && replacement.matches(args.args)
+          ? {
+              ...args,
+              executable: replacement.executable,
+              args: [...replacement.replacementArgs],
+            }
+          : args,
+      );
+    },
+    waitForInitialResult: fixture.host.waitForInitialResult.bind(fixture.host),
+    interact: fixture.host.interact.bind(fixture.host),
+    listThreadSessions: fixture.host.listThreadSessions.bind(fixture.host),
+    closeAll: fixture.host.closeAll.bind(fixture.host),
+  };
 }
 
 async function captureSnapshot(fixture: GitInspectionFixture) {

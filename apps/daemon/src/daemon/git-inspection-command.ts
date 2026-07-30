@@ -178,15 +178,27 @@ export async function captureGitObjectIndexSnapshot(args: {
     maxOutputBytesPerStream: args.maxOutputBytesPerStream,
     ...(args.signal === undefined ? {} : { signal: args.signal }),
   };
-  const bare = await runGitInspectionCommand({
-    ...context,
-    cwd: args.workingDirectory,
-    commandArgs: [
-      ...GIT_INSPECTION_GLOBAL_ARGUMENTS,
-      'rev-parse',
-      '--is-bare-repository',
-    ],
-  });
+  const [bare, root] = await Promise.all([
+    runGitInspectionCommand({
+      ...context,
+      cwd: args.workingDirectory,
+      commandArgs: [
+        ...GIT_INSPECTION_GLOBAL_ARGUMENTS,
+        'rev-parse',
+        '--is-bare-repository',
+      ],
+    }),
+    runGitInspectionCommand({
+      ...context,
+      cwd: args.workingDirectory,
+      commandArgs: [
+        ...GIT_INSPECTION_GLOBAL_ARGUMENTS,
+        'rev-parse',
+        '--path-format=absolute',
+        '--show-toplevel',
+      ],
+    }),
+  ]);
   if (!bare.ok) {
     return bare;
   }
@@ -210,16 +222,6 @@ export async function captureGitObjectIndexSnapshot(args: {
     );
   }
 
-  const root = await runGitInspectionCommand({
-    ...context,
-    cwd: args.workingDirectory,
-    commandArgs: [
-      ...GIT_INSPECTION_GLOBAL_ARGUMENTS,
-      'rev-parse',
-      '--path-format=absolute',
-      '--show-toplevel',
-    ],
-  });
   if (!root.ok) {
     return root;
   }
@@ -237,19 +239,22 @@ export async function captureGitObjectIndexSnapshot(args: {
     );
   }
 
-  const objectFormatBefore = await readGitObjectFormat(context, repositoryRoot);
+  const [objectFormatBefore, branchBefore, headBefore, indexBefore] =
+    await Promise.all([
+      readGitObjectFormat(context, repositoryRoot),
+      readGitBranch(context, repositoryRoot),
+      readGitHeadObjectId(context, repositoryRoot),
+      readGitIndexEntries(context, repositoryRoot),
+    ]);
   if (!objectFormatBefore.ok) {
     return objectFormatBefore;
   }
-  const branchBefore = await readGitBranch(context, repositoryRoot);
   if (!branchBefore.ok) {
     return branchBefore;
   }
-  const headBefore = await readGitHeadObjectId(context, repositoryRoot);
   if (!headBefore.ok) {
     return headBefore;
   }
-  const indexBefore = await readGitIndexEntries(context, repositoryRoot);
   if (!indexBefore.ok) {
     return indexBefore;
   }
@@ -260,19 +265,22 @@ export async function captureGitObjectIndexSnapshot(args: {
   if (!headEntries.ok) {
     return headEntries;
   }
-  const indexAfter = await readGitIndexEntries(context, repositoryRoot);
+  const [indexAfter, headAfter, branchAfter, objectFormatAfter] =
+    await Promise.all([
+      readGitIndexEntries(context, repositoryRoot),
+      readGitHeadObjectId(context, repositoryRoot),
+      readGitBranch(context, repositoryRoot),
+      readGitObjectFormat(context, repositoryRoot),
+    ]);
   if (!indexAfter.ok) {
     return indexAfter;
   }
-  const headAfter = await readGitHeadObjectId(context, repositoryRoot);
   if (!headAfter.ok) {
     return headAfter;
   }
-  const branchAfter = await readGitBranch(context, repositoryRoot);
   if (!branchAfter.ok) {
     return branchAfter;
   }
-  const objectFormatAfter = await readGitObjectFormat(context, repositoryRoot);
   if (!objectFormatAfter.ok) {
     return objectFormatAfter;
   }
