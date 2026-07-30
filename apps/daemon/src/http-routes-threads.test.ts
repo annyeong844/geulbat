@@ -302,6 +302,60 @@ void test('authenticated thread open returns the latest complete turn and pages 
   }
 });
 
+void test('authenticated thread read routes reject invalid identities and missing page anchors', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+
+  await withAuthenticatedDaemonServer(
+    async ({ port }) => {
+      for (const request of [
+        { method: 'GET', path: '/api/threads/not-a-thread/open' },
+        {
+          method: 'GET',
+          path: '/api/threads/not-a-thread/messages?before=entry',
+        },
+        { method: 'GET', path: '/api/threads/not-a-thread' },
+        {
+          method: 'GET',
+          path: '/api/threads/not-a-thread/attachments/attachment',
+        },
+        { method: 'GET', path: '/api/threads/not-a-thread/media/media.mp4' },
+        { method: 'GET', path: '/api/threads/not-a-thread/archive' },
+        { method: 'POST', path: '/api/threads/not-a-thread/branch' },
+        {
+          method: 'POST',
+          path: '/api/threads/not-a-thread/artifacts/artifact/versions',
+        },
+        { method: 'PATCH', path: '/api/threads/not-a-thread' },
+        { method: 'DELETE', path: '/api/threads/not-a-thread' },
+      ]) {
+        const response = await fetch(
+          `http://127.0.0.1:${port}${request.path}`,
+          {
+            method: request.method,
+            headers: authHeaders(),
+          },
+        );
+        assert.equal(response.status, 400);
+        assert.deepEqual(await response.json(), {
+          code: 'bad_request',
+          message: 'invalid threadId',
+        });
+      }
+
+      const missingAnchor = await fetch(
+        `http://127.0.0.1:${port}/api/threads/${assertValidThreadId(randomUUID())}/messages`,
+        { headers: authHeaders() },
+      );
+      assert.equal(missingAnchor.status, 400);
+      assert.deepEqual(await missingAnchor.json(), {
+        code: 'invalid_args',
+        message: 'before entry id is required',
+      });
+    },
+    { daemonContext },
+  );
+});
+
 void test('authenticated thread detail restores acknowledged terminal worker history', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const stateRoot = daemonContext.homeStateRoot;
@@ -652,6 +706,20 @@ void test('authenticated thread detail rejects corrupted transcript data', async
   try {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
+        for (const path of [
+          `/api/threads/${threadId}/open`,
+          `/api/threads/${threadId}/messages?before=entry`,
+        ]) {
+          const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+            headers: authHeaders(),
+          });
+          assert.equal(response.status, 500);
+          assert.deepEqual(await response.json(), {
+            code: 'internal',
+            message: 'thread transcript is corrupted',
+          });
+        }
+
         const detailRes = await fetch(
           `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
@@ -701,6 +769,16 @@ void test('authenticated thread detail rejects corrupted artifact store data', a
   try {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
+        const openResponse = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${threadId}/open`,
+          { headers: authHeaders() },
+        );
+        assert.equal(openResponse.status, 500);
+        assert.deepEqual(await openResponse.json(), {
+          code: 'internal',
+          message: 'thread artifact store is corrupted',
+        });
+
         const detailRes = await fetch(
           `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
